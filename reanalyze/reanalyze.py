@@ -20,12 +20,14 @@ class PERerun:
                  working_dir,
                  project_dir,
                  apx='NRSur7dq4',
-                 approvals=None):
+                 approvals=None,
+                 overwrite_configs=False):
 
         self.working_dir = Path(working_dir)
         self.project_dir = Path(project_dir)
         self.apx = apx
         self.approvals = approvals or {}
+        self.overwrite_configs = overwrite_configs
 
         self.project_dir.mkdir(parents=True, exist_ok=True)
 
@@ -133,8 +135,12 @@ class PERerun:
             dest_path = event_dir / filename
 
             if not self.resume:
-                copied_path = shutil.copy2(src_path, dest_path)
-                all_outs.update({key: copied_path})
+                if dest_path.exists() and not self.overwrite_configs:
+                    print(f"Skipping existing config for {key}: {dest_path}")
+                    all_outs.update({key: "skipped_existing"})
+                else:
+                    copied_path = shutil.copy2(src_path, dest_path)
+                    all_outs.update({key: copied_path})
 
             config_paths.update({key: dest_path})
 
