@@ -58,10 +58,12 @@ def test_find_bilby_configs_honors_approval_token(tmp_path):
     assert rerun.find_bilby_configs() == {"S240001a": str(approved)}
 
 
-def test_find_bilby_configs_raises_for_missing_approval(tmp_path):
+def test_find_bilby_configs_falls_back_to_last_available_config_for_missing_approval(tmp_path, capsys):
     working_dir = tmp_path / "working"
-    cfg = working_dir / "S240001a" / "bilby-NRSur7dq4.ini"
-    _make_config(cfg)
+    first = working_dir / "S240001a" / "bilby-NRSur7dq4-1.ini"
+    last = working_dir / "S240001a" / "bilby-NRSur7dq4-2.ini"
+    _make_config(first)
+    _make_config(last)
 
     rerun = PERerun(
         working_dir=working_dir,
@@ -69,8 +71,10 @@ def test_find_bilby_configs_raises_for_missing_approval(tmp_path):
         approvals={"S240001a": "does-not-exist"},
     )
 
-    with pytest.raises(ValueError, match="No approved config file"):
-        rerun.find_bilby_configs()
+    assert rerun.find_bilby_configs() == {"S240001a": str(last)}
+    captured = capsys.readouterr()
+    assert "approval token" in captured.out
+    assert "falling back" in captured.out
 
 
 def test_copy_inis_copies_on_fresh_project(tmp_path):
