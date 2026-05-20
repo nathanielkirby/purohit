@@ -8,7 +8,7 @@ import pandas as pd
 from reanalyze.utils import get_condor_job_status
 from waveformtools.waveformtools import message
 from tqdm import tqdm
-import shutil
+import shutil, getpass
 
 class PERerun:
 
@@ -148,8 +148,11 @@ class PERerun:
 
         config_path = self.config_paths[event]
         print(config_path)
-        user = os.getcwd().split('/')[2]
-        webdir = f"/home/{user}/public_html/rean/{event}"
+        
+        user = getpass.getuser()
+        
+        webdir = self.project_dir/"webdir"
+        
         outdir = f"{os.path.dirname(config_path)}/pe"
         print(outdir)
         command = f"sed -i '/^label/c\\label={event}_p2' {config_path}"
