@@ -1,14 +1,18 @@
-import numpy as np
-import subprocess
 import os
-from subprocess import PIPE, run as sprun
+import re
+import subprocess
 from pathlib import Path
-import yaml
+import shutil
+import getpass
+
+import numpy as np
 import pandas as pd
+import yaml
+from tqdm import tqdm
+
 from reanalyze.utils import get_condor_job_status
 from waveformtools.waveformtools import message
-from tqdm import tqdm
-import shutil, getpass
+
 
 class PERerun:
 
@@ -16,77 +20,91 @@ class PERerun:
                  working_dir,
                  project_dir,
                  apx='NRSur7dq4',
-                 approvals={}):
+                 approvals=None):
 
         self.working_dir = Path(working_dir)
         self.project_dir = Path(project_dir)
         self.apx = apx
-        self.approvals=approvals
+        self.approvals = approvals or {}
 
-        if not os.path.exists(self.project_dir):
-            os.makedirs(self.project_dir)
+        self.project_dir.mkdir(parents=True, exist_ok=True)
 
         os.chdir(self.project_dir)
 
-        self.submitted_jobs_list_file = self.project_dir/"submitted_jobs.txt"
-        
-        if not os.path.isfile(self.submitted_jobs_list_file):
-            self.load=False
+        self.submitted_jobs_list_file = self.project_dir / "submitted_jobs.txt"
+        self.resume = self.submitted_jobs_list_file.is_file()
 
-            with open(self.submitted_jobs_list_file, "w") as file:
-                pass
-    
+        if not self.resume:
+            self.submitted_jobs_list_file.touch()
+
     def event_dir(self, event):
         return Path(os.path.dirname(self.config_paths[event]))
 
     def run_cmd(self,
-            command, 
-            shell=True, 
-            capture_output=True, 
-            check=True, 
+            command,
+            shell=True,
+            capture_output=True,
+            check=True,
             text=True):
 
         try:
             out = subprocess.run(command, shell=shell, capture_output=capture_output, check=check, text=text)
         except subprocess.CalledProcessError as e:
-            print(f"sed command: \n {command} \n failed!")
+            print(f"Command:\n {command}\nfailed!")
             print(f"Exit code: {e.returncode}")
+            if e.stdout:
+                print(f"stdout:\n{e.stdout}")
+            if e.stderr:
+                print(f"stderr:\n{e.stderr}")
+            raise
 
         return out
-    
 
-    def find_bilby_configs(self,  
-                          ):
-        
+    def find_bilby_configs(self):
 
         message("Running find...", message_verbosity=2)
         print("Running find")
-        command = f'find {self.working_dir} -type f -iname "*{self.apx}*.ini" '
-        output = self.run_cmd(command, shell=True, capture_output=True, text=True)
-        files = output.stdout.split('\n')[:-1]
-        event_dict = {}
-        events = []
+
+        if not self.working_dir.is_dir():
+            raise FileNotFoundError(f"working_dir does not exist or is not a directory: {self.working_dir}")
+
+        apx_lower = self.apx.lower()
+        files = sorted(
+            path for path in self.working_dir.rglob("*.ini")
+            if apx_lower in path.name.lower()
+        )
+
+        if not files:
+            raise FileNotFoundError(
+                f"No bilby_pipe ini files matching '*{self.apx}*.ini' found under {self.working_dir}"
+            )
+
+        event_sdict = {}
 
         message("Parsing event names", message_verbosity=2)
         for item in files:
-            event_files = []
-            event_name = item.split('/')[5]
-            #print(event_name)
-            events.append(event_name)
+            rel_path = item.relative_to(self.working_dir)
+            if not rel_path.parts:
+                continue
+            event_name = rel_path.parts[0]
+            event_sdict.setdefault(event_name, []).append(str(item))
 
-        events = set(events)
-        event_sdict = {}
         event_dict = {}
 
         message("Finding configs", message_verbosity=2)
 
-        for idx, event in tqdm(enumerate(events)):
-            event_files = sorted([item for item in files if event in item])
+        for event in tqdm(sorted(event_sdict)):
+            event_files = sorted(event_sdict[event])
 
-            if event in self.approvals.keys():
+            if event in self.approvals:
                 tfile = self.approvals[event]
                 fil_files = [item for item in event_files if tfile in item]
-                if len(fil_files)>1:
+                if not fil_files:
+                    raise ValueError(
+                        f"No approved config file for event {event!r} matched approval token {tfile!r}. "
+                        f"Available files: {event_files}"
+                    )
+                if len(fil_files) > 1:
                     message(f"Found {len(fil_files)} approved files for {event}", message_verbosity=2)
                 event_file = fil_files[0]
 
@@ -95,40 +113,36 @@ class PERerun:
                 event_file = event_files[0]
 
             event_dict.update({event: event_file})
-            event_sdict.update({event: event_files})
 
         return event_dict
-
 
     def copy_inis(self):
 
         all_outs = {}
         config_paths = {}
         project_dir = Path(self.project_dir)
-        working_dir = project_dir/"working"
-        
-        if not os.path.isdir(working_dir):
-            os.mkdir(working_dir)
+        working_dir = project_dir / "working"
+        working_dir.mkdir(parents=True, exist_ok=True)
 
         for key, val in self.source_dict.items():
-            event_dir = working_dir/key
+            event_dir = working_dir / key
+            event_dir.mkdir(parents=True, exist_ok=True)
 
-            if not os.path.isdir(event_dir):
-                os.mkdir(event_dir)
-            
-            filename = os.path.basename(val)
+            src_path = Path(val)
+            filename = src_path.name
+            dest_path = event_dir / filename
 
-            if not self.load:
-                command = f"cp {val} {event_dir}/"
-                output = subprocess.run(command, shell=True,  capture_output=True, text=True)
-                all_outs.update({key : output})
-            config_paths.update({key : Path(f"{event_dir}/{filename}")})
+            if not self.resume:
+                copied_path = shutil.copy2(src_path, dest_path)
+                all_outs.update({key: copied_path})
+
+            config_paths.update({key: dest_path})
 
         return all_outs, config_paths
 
     def reconfigure_one_ini(self, event):
         ''' reconfigure one ini
-            
+
             Changes:
             1. label
             2. outdir
@@ -136,12 +150,12 @@ class PERerun:
             4. accounting user
             5. Priors
             '''
-            
-        to_change = ["label" ,
+
+        to_change = ["label",
                     "accounting-user",
                     "outdir",
                     "webdir",
-                    "request-memory", 
+                    "request-memory",
                     "request-disk",
                     "analysis-executable",
                     "prior-dict",
@@ -150,11 +164,11 @@ class PERerun:
 
         config_path = self.config_paths[event]
         print(config_path)
-        
+
         user = getpass.getuser()
-        
-        webdir = self.project_dir/"webdir"
-        
+
+        webdir = self.project_dir / "webdir"
+
         outdir = f"{os.path.dirname(config_path)}/pe"
         print(outdir)
         command = f"sed -i '/^label/c\\label={event}_p2' {config_path}"
@@ -170,18 +184,23 @@ class PERerun:
         command = f"sed -i '/^request-disk/c\\request-disk=16' {config_path}"
         out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
         bilby_pipe_analysis_path = shutil.which("bilby_pipe_analysis")
+        if bilby_pipe_analysis_path is None:
+            raise FileNotFoundError(
+                "Could not find 'bilby_pipe_analysis' on PATH. Activate the intended bilby_pipe environment first."
+            )
         command = f"sed -i '/^analysis-executable=/c\\analysis-executable={bilby_pipe_analysis_path}' {config_path}"
         out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
         command = f"sed -i '/^submit=/c\\submit=condor' {config_path}"
         out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
-        command = f"sed -i '/^additional-transfer-paths=/c\\additional-transfer-paths=[\/scratch\/lalsimulation/NRSur7dq4_v1.0.h5]' {config_path}"
-        out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
+        if self.apx == 'NRSur7dq4':
+            command = f"sed -i '/^additional-transfer-paths=/c\\additional-transfer-paths=[\/scratch\/lalsimulation/NRSur7dq4_v1.0.h5]' {config_path}"
+            out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
 
         cmd = [
             "sed", "-Ei",
             r"s/a_1[[:space:]]*=[[:space:]]*Uniform[[:space:]]*\([[:space:]]*name[[:space:]]*=[[:space:]]*'a_1',[[:space:]]*minimum[[:space:]]*=[[:space:]]*0,[[:space:]]*maximum[[:space:]]*=[[:space:]]*0\.99[[:space:]]*\)/a_1 = PowerLaw(name='a_1', minimum=0, maximum=1, alpha=2)/g",
             config_path
-            ] 
+            ]
 
         out = self.run_cmd(cmd, shell=False)
         # print(out)
@@ -190,16 +209,14 @@ class PERerun:
             r"s/[[:space:]]*a_2[[:space:]]*=[[:space:]]*Uniform[[:space:]]*\([[:space:]]*name[[:space:]]*=[[:space:]]*'a_2',[[:space:]]*minimum[[:space:]]*=[[:space:]]*0,[[:space:]]*maximum[[:space:]]*=[[:space:]]*0\.99[[:space:]]*\)/ a_2 = PowerLaw(name='a_2', minimum=0, maximum=1, alpha=2)/g",
             config_path
             ]
-        
+
         out = self.run_cmd(cmd, shell=False)
         sampler_kwargs = "sampler-kwargs={'nlive': 2000, 'naccept': 60, 'check_point_plot': True, 'check_point_delta_t': 1800, 'print_method': 'interval-60', 'sample': 'acceptance-walk', 'npool': 16, 'dlogz': 0.01}"
         command = f"sed -i '/^sampler-kwargs/c\\{sampler_kwargs}' {config_path}"
         out = self.run_cmd(command)
 
-
-
-    def prepare_configs(self, 
-                        working_dir="/home/pe.o4/GWTC4/working", 
+    def prepare_configs(self,
+                        working_dir="/home/pe.o4/GWTC4/working",
                         apx='NRSur7dq4'):
 
         message("Running find configs", message_verbosity=2)
@@ -208,15 +225,14 @@ class PERerun:
         outs, config_paths = self.copy_inis()
         self.config_paths = config_paths
 
-    
     def reconfigure(self):
-        if not self.load:
+        if not self.resume:
             for event, config_path in self.config_paths.items():
                 self.reconfigure_one_ini(event)
 
     def read_job_status(self, event):
-         
-        job_file = Path(os.path.dirname(self.config_paths[event]))/"status.yaml"
+
+        job_file = Path(os.path.dirname(self.config_paths[event])) / "status.yaml"
 
         if not os.path.isfile(job_file):
             status = 'pending'
@@ -224,28 +240,24 @@ class PERerun:
 
         else:
             with open(job_file, 'r') as file:
-                info = yaml.safe_load(file)        
+                info = yaml.safe_load(file) or {}
 
-            if 'status' in info.keys():
-                status = info[status]
-            else:
-                status = 'unknown'
-        
-            if 'jobid' in info.keys():
-                jobid = info['jobid']
+            status = info.get('status', 'unknown')
+            jobid = info.get('jobid')
 
         return status, jobid
 
     def all_job_status(self):
-        
+
         status_dict = {}
         for key in self.config_paths.keys():
 
             status, jobid = self.read_job_status(key)
             status = self.query_job_status(key, jobid)
-            status_dict.update({key : {'status': status, 'jobid': jobid}})
+            status_dict.update({key: {'status': status, 'jobid': jobid}})
+            self.update_job_status_file(key, {'status': status})
 
-        df= pd.DataFrame(status_dict).T
+        df = pd.DataFrame(status_dict).T
         print(df)
 
         self.file_jobs_statuses = df
@@ -253,57 +265,59 @@ class PERerun:
         return df
 
     def add_to_submitted_jobs_list(self, event):
-        
+
         with open(self.submitted_jobs_list_file, "a") as file:
         # This writes the list of strings to the file.
             file.write(f"{event}\n")
-    
+
     def parse_submitted_jobs_list(self):
-        
+
         with open(self.submitted_jobs_list_file, "r") as file:
         # This writes the list of strings to the file.
             sub_jobs = file.readlines()
 
-        self.submitted_jobs = [item.strip("\n") for item in sub_jobs]
+        self.submitted_jobs = [item.strip("\n") for item in sub_jobs if item.strip()]
         self.pending_jobs = [item for item in self.config_paths.keys() if item not in self.submitted_jobs]
 
         return sub_jobs
-    
+
     def query_job_status(self, event, jobid):
         self.parse_submitted_jobs_list()
 
         if event not in self.submitted_jobs:
             status = "pending"
+        elif jobid is None:
+            status = None
         else:
-            #try:
             status = get_condor_job_status(jobid, 0)
             print(jobid, status)
-            #except:
-            #    status = None
-        
+
         if status is None:
             status = self.check_for_completion(event)
 
         return status
 
     def update_job_status_file(self, event, info):
-        job_file = Path(os.path.dirname(self.config_paths[event]))/"status.yaml"
+        job_file = Path(os.path.dirname(self.config_paths[event])) / "status.yaml"
 
         if not os.path.isfile(job_file):
             with open(job_file, 'w') as file:
                 yaml.dump({}, file)
-        
+
         with open(job_file, 'r') as file:
-            status = yaml.safe_load(file)
-        
+            status = yaml.safe_load(file) or {}
+
         status.update(info)
-        
+
         with open(job_file, 'w') as file:
             yaml.safe_dump(status, file, sort_keys=False)
-            
+
     def check_for_completion(self, event):
 
-        final_results_dir = self.event_dir(event)/"pe/final_result"
+        final_results_dir = self.event_dir(event) / "pe/final_result"
+        if not final_results_dir.is_dir():
+            return "incomplete"
+
         files = os.listdir(final_results_dir)
 
         if not files:
@@ -314,45 +328,65 @@ class PERerun:
                 status = 'completed'
             else:
                 status = 'incomplete'
-            
 
         return status
-    
+
+    def _parse_jobid_from_bilby_pipe_stdout(self, stdout):
+        match = re.search(r"\b(\d+)(?:\.\d+)?\b", stdout)
+        if match is None:
+            raise RuntimeError(f"Could not parse Condor cluster id from bilby_pipe output:\n{stdout}")
+        return match.group(1)
+
     def submit_one_job(self, event):
-        
+
         self.parse_submitted_jobs_list()
         if event not in self.submitted_jobs:
             conf_file = self.config_paths[event]
-            command = ["bilby_pipe", conf_file, "--submit"]
+            command = ["bilby_pipe", str(conf_file), "--submit"]
             out = self.run_cmd(command, shell=False)
             stdout = out.stdout
-            jobid = stdout.split("\n")[1].split(" ")[-1][:-1]
+            jobid = self._parse_jobid_from_bilby_pipe_stdout(stdout)
             self.add_to_submitted_jobs_list(event)
-            self.update_job_status_file(event, {"jobid": jobid})
+            self.update_job_status_file(event, {"jobid": jobid, "status": "submitted"})
             print(f"Submitted {event} with jobid {jobid}")
             return out
         else:
             print(f"Job {event} previosly submitted")
+            return None
 
     def submit_next_job(self):
 
         self.parse_submitted_jobs_list()
 
+        if not self.pending_jobs:
+            print("No pending jobs to submit")
+            return None
+
         event = self.pending_jobs[0]
-        self.submit_one_job(event)
+        out = self.submit_one_job(event)
         print(f"Submitted {event}")
+        return out
 
     def submit_jobs(self, njobs=1):
-        
+
         self.parse_submitted_jobs_list()
 
-        for idx in range(njobs):
-            event = self.pending_jobs[idx]
-            self.submit_one_job(event)
+        if njobs < 0:
+            raise ValueError("njobs must be non-negative")
+
+        outs = []
+        for event in self.pending_jobs[:njobs]:
+            outs.append(self.submit_one_job(event))
             print(f"Submitted {event}")
 
+        if len(outs) < njobs:
+            print(f"Requested {njobs} jobs but only {len(outs)} pending jobs were available")
+
+        return outs
+
     def load(self):
-        self.find_bilby_configs()
+        self.source_dict = self.find_bilby_configs()
+        return self.source_dict
 
     def run(self):
 
