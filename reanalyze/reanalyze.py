@@ -43,6 +43,13 @@ class PERerun:
         falls back to the last sorted available config for that event.
     overwrite_configs : bool, optional
         If true, overwrite existing copied INI files during config preparation.
+    cache_config_discovery : bool, optional
+        If true, cache the discovered matching source INI list under
+        ``project_dir`` and reuse it on later runs.
+    refresh_config_cache : bool, optional
+        If true, ignore any existing source-INI cache and rescan ``working_dir``.
+    config_cache_file : str or pathlib.Path or None, optional
+        Optional explicit path to the source-INI discovery cache file.
     verbose : bool, optional
         If true, print high-level progress and status messages to stdout.
     progress : bool, optional
@@ -61,6 +68,9 @@ class PERerun:
                  apx='NRSur7dq4',
                  approvals=None,
                  overwrite_configs=False,
+                 cache_config_discovery=True,
+                 refresh_config_cache=False,
+                 config_cache_file=None,
                  verbose=True,
                  progress=True):
 
@@ -69,6 +79,13 @@ class PERerun:
         self.apx = apx
         self.approvals = approvals or {}
         self.overwrite_configs = overwrite_configs
+        self.cache_config_discovery = cache_config_discovery
+        self.refresh_config_cache = refresh_config_cache
+        self.config_cache_file = (
+            Path(config_cache_file)
+            if config_cache_file is not None
+            else self.project_dir / "source_config_manifest.yaml"
+        )
         self.verbose = verbose
         self.progress = progress
 
@@ -87,6 +104,8 @@ class PERerun:
 
         self._log(f"Source working directory: {self.working_dir}", level="DEBUG")
         self._log(f"Approximant/config token: {self.apx}", level="DEBUG")
+        if self.cache_config_discovery:
+            self._log(f"Config discovery cache: {self.config_cache_file}", level="DEBUG")
 
     def _log(self, message_text, level="INFO"):
         """Print a consistently formatted status message when verbose output is enabled."""
@@ -126,6 +145,67 @@ class PERerun:
             raise
 
         return out
+
+    def _config_cache_metadata(self):
+        """Return metadata used to validate the source-INI discovery cache."""
+
+        return {
+            "working_dir": str(self.working_dir.expanduser().resolve()),
+            "apx": self.apx,
+        }
+
+    def _read_config_cache(self):
+        """Read cached source INI paths when the cache is enabled and valid."""
+
+        if not self.cache_config_discovery:
+            return None
+        if self.refresh_config_cache:
+            self._log("Ignoring source config cache because refresh_config_cache=True", level="DEBUG")
+            return None
+        if not self.config_cache_file.is_file():
+            return None
+
+        with self.config_cache_file.open("r") as handle:
+            cache = yaml.safe_load(handle) or {}
+
+        expected_metadata = self._config_cache_metadata()
+        metadata = cache.get("metadata", {})
+        if metadata != expected_metadata:
+            self._log(
+                f"Ignoring stale source config cache {self.config_cache_file}: "
+                f"metadata {metadata!r} does not match {expected_metadata!r}",
+                level="WARNING",
+            )
+            return None
+
+        cached_files = [Path(path) for path in cache.get("files", [])]
+        missing_files = [path for path in cached_files if not path.is_file()]
+        if missing_files:
+            self._log(
+                f"Ignoring source config cache {self.config_cache_file}: "
+                f"{len(missing_files)} cached source file(s) are missing",
+                level="WARNING",
+            )
+            return None
+
+        files = sorted(cached_files)
+        self._log(f"Loaded {len(files)} matching INI file(s) from cache {self.config_cache_file}")
+        return files
+
+    def _write_config_cache(self, files):
+        """Persist the discovered source INI list for faster later runs."""
+
+        if not self.cache_config_discovery:
+            return
+
+        self.config_cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache = {
+            "metadata": self._config_cache_metadata(),
+            "files": [str(path) for path in files],
+        }
+        with self.config_cache_file.open("w") as handle:
+            yaml.safe_dump(cache, handle, sort_keys=False)
+        self._log(f"Wrote source config cache with {len(files)} file(s): {self.config_cache_file}")
 
     def _scan_matching_ini_files(self):
         """Scan ``working_dir`` for matching INI files with live config/event counters."""
@@ -196,7 +276,10 @@ class PERerun:
         if not self.working_dir.is_dir():
             raise FileNotFoundError(f"working_dir does not exist or is not a directory: {self.working_dir}")
 
-        files = self._scan_matching_ini_files()
+        files = self._read_config_cache()
+        if files is None:
+            files = self._scan_matching_ini_files()
+            self._write_config_cache(files)
 
         if not files:
             raise FileNotFoundError(
@@ -248,11 +331,15 @@ class PERerun:
     def copy_inis(self):
         """Copy selected source INI files into ``project_dir/working/<event>``.
 
+        Existing destination files are skipped by default so interrupted copy
+        steps can be resumed safely. Set ``overwrite_configs=True`` to force a
+        fresh copy over existing files.
+
         Returns
         -------
         tuple[dict[str, str], dict[str, pathlib.Path]]
-            The first item records copied destination paths for fresh projects.
-            The second maps event names to project-local INI paths.
+            The first item records copied or skipped destination paths. The
+            second maps event names to project-local INI paths.
         """
 
         all_outs = {}
@@ -273,10 +360,7 @@ class PERerun:
             filename = src_path.name
             dest_path = event_dir / filename
 
-            if self.resume:
-                skipped_count += 1
-                self._log(f"Event {key}: resume mode; using existing local config path {dest_path}", level="DEBUG")
-            elif dest_path.exists() and not self.overwrite_configs:
+            if dest_path.exists() and not self.overwrite_configs:
                 skipped_count += 1
                 self._log(f"Event {key}: keeping existing copied config {dest_path}")
                 all_outs.update({key: "skipped_existing"})
