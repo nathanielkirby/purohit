@@ -39,6 +39,12 @@ class PERerun:
     approvals : dict[str, str] or None, optional
         Optional mapping from event name to a substring that selects the approved
         config file when multiple matching INI files exist for that event.
+    overwrite_configs : bool, optional
+        If true, overwrite existing copied INI files during config preparation.
+    verbose : bool, optional
+        If true, print high-level progress and status messages to stdout.
+    progress : bool, optional
+        If true, show tqdm progress bars for multi-event operations.
 
     Notes
     -----
@@ -52,13 +58,17 @@ class PERerun:
                  project_dir,
                  apx='NRSur7dq4',
                  approvals=None,
-                 overwrite_configs=False):
+                 overwrite_configs=False,
+                 verbose=True,
+                 progress=True):
 
         self.working_dir = Path(working_dir)
         self.project_dir = Path(project_dir)
         self.apx = apx
         self.approvals = approvals or {}
         self.overwrite_configs = overwrite_configs
+        self.verbose = verbose
+        self.progress = progress
 
         self.project_dir.mkdir(parents=True, exist_ok=True)
 
@@ -69,6 +79,23 @@ class PERerun:
 
         if not self.resume:
             self.submitted_jobs_list_file.touch()
+            self._log(f"Initialized new project at {self.project_dir}")
+        else:
+            self._log(f"Resuming existing project at {self.project_dir}")
+
+        self._log(f"Source working directory: {self.working_dir}", level="DEBUG")
+        self._log(f"Approximant/config token: {self.apx}", level="DEBUG")
+
+    def _log(self, message_text, level="INFO"):
+        """Print a consistently formatted status message when verbose output is enabled."""
+
+        if self.verbose:
+            print(f"[purohit] {level}: {message_text}")
+
+    def _progress(self, iterable, *, desc, total=None):
+        """Wrap an iterable in tqdm when progress bars are enabled."""
+
+        return tqdm(iterable, desc=desc, total=total, disable=not self.progress)
 
     def event_dir(self, event):
         """Return the project-local working directory for an event."""
@@ -89,12 +116,11 @@ class PERerun:
         try:
             out = subprocess.run(command, shell=shell, capture_output=capture_output, check=check, text=text)
         except subprocess.CalledProcessError as e:
-            print(f"Command:\n {command}\nfailed!")
-            print(f"Exit code: {e.returncode}")
+            self._log(f"Command failed with exit code {e.returncode}: {command}", level="ERROR")
             if e.stdout:
-                print(f"stdout:\n{e.stdout}")
+                self._log(f"stdout:\n{e.stdout}", level="ERROR")
             if e.stderr:
-                print(f"stderr:\n{e.stderr}")
+                self._log(f"stderr:\n{e.stderr}", level="ERROR")
             raise
 
         return out
@@ -115,8 +141,7 @@ class PERerun:
             If an approval token is supplied but matches no files for an event.
         """
 
-        message("Running find...", message_verbosity=2)
-        print("Running find")
+        self._log(f"Searching for bilby_pipe INI files matching '*{self.apx}*.ini' under {self.working_dir}")
 
         if not self.working_dir.is_dir():
             raise FileNotFoundError(f"working_dir does not exist or is not a directory: {self.working_dir}")
@@ -132,9 +157,9 @@ class PERerun:
                 f"No bilby_pipe ini files matching '*{self.apx}*.ini' found under {self.working_dir}"
             )
 
-        event_sdict = {}
+        self._log(f"Found {len(files)} matching INI file(s)")
 
-        message("Parsing event names", message_verbosity=2)
+        event_sdict = {}
         for item in files:
             rel_path = item.relative_to(self.working_dir)
             if not rel_path.parts:
@@ -142,11 +167,11 @@ class PERerun:
             event_name = rel_path.parts[0]
             event_sdict.setdefault(event_name, []).append(str(item))
 
+        self._log(f"Grouped configs into {len(event_sdict)} event(s)")
+
         event_dict = {}
 
-        message("Finding configs", message_verbosity=2)
-
-        for event in tqdm(sorted(event_sdict)):
+        for event in self._progress(sorted(event_sdict), desc="Selecting configs", total=len(event_sdict)):
             event_files = sorted(event_sdict[event])
 
             if event in self.approvals:
@@ -158,15 +183,16 @@ class PERerun:
                         f"Available files: {event_files}"
                     )
                 if len(fil_files) > 1:
-                    message(f"Found {len(fil_files)} approved files for {event}", message_verbosity=2)
+                    self._log(f"Event {event}: approval token matched {len(fil_files)} files; using first sorted match", level="WARNING")
                 event_file = fil_files[0]
-
-                message(f"Choosing {event_file} for {event}", message_verbosity=2)
+                self._log(f"Event {event}: selected approved config {event_file}", level="DEBUG")
             else:
                 event_file = event_files[0]
+                self._log(f"Event {event}: selected config {event_file}", level="DEBUG")
 
             event_dict.update({event: event_file})
 
+        self._log(f"Selected one source config for each of {len(event_dict)} event(s)")
         return event_dict
 
     def copy_inis(self):
@@ -185,7 +211,11 @@ class PERerun:
         working_dir = project_dir / "working"
         working_dir.mkdir(parents=True, exist_ok=True)
 
-        for key, val in self.source_dict.items():
+        copied_count = 0
+        skipped_count = 0
+
+        items = list(self.source_dict.items())
+        for key, val in self._progress(items, desc="Copying configs", total=len(items)):
             event_dir = working_dir / key
             event_dir.mkdir(parents=True, exist_ok=True)
 
@@ -193,16 +223,24 @@ class PERerun:
             filename = src_path.name
             dest_path = event_dir / filename
 
-            if not self.resume:
-                if dest_path.exists() and not self.overwrite_configs:
-                    print(f"Skipping existing config for {key}: {dest_path}")
-                    all_outs.update({key: "skipped_existing"})
-                else:
-                    copied_path = shutil.copy2(src_path, dest_path)
-                    all_outs.update({key: copied_path})
+            if self.resume:
+                skipped_count += 1
+                self._log(f"Event {key}: resume mode; using existing local config path {dest_path}", level="DEBUG")
+            elif dest_path.exists() and not self.overwrite_configs:
+                skipped_count += 1
+                self._log(f"Event {key}: keeping existing copied config {dest_path}")
+                all_outs.update({key: "skipped_existing"})
+            else:
+                copied_path = shutil.copy2(src_path, dest_path)
+                copied_count += 1
+                self._log(f"Event {key}: copied {src_path} -> {dest_path}", level="DEBUG")
+                all_outs.update({key: copied_path})
 
             config_paths.update({key: dest_path})
 
+        self._log(
+            f"Config copy step complete: {copied_count} copied, {skipped_count} skipped, {len(config_paths)} local config path(s) tracked"
+        )
         return all_outs, config_paths
 
     def reconfigure_one_ini(self, event):
@@ -214,50 +252,48 @@ class PERerun:
         ``NRSur7dq4`` runs it also writes the NRSur7dq4 HDF5 transfer path.
         """
 
-        to_change = ["label",
-                    "accounting-user",
-                    "outdir",
-                    "webdir",
-                    "request-memory",
-                    "request-disk",
-                    "analysis-executable",
-                    "prior-dict",
-                    "sampler-kwargs"
-                    ]
-
         config_path = self.config_paths[event]
-        print(config_path)
-
         user = getpass.getuser()
-
         webdir = self.project_dir / "webdir"
-
         outdir = f"{os.path.dirname(config_path)}/pe"
-        print(outdir)
-        command = f"sed -i '/^label/c\\label={event}_p2' {config_path}"
-        out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
-        command = f"sed -i '/^accounting-user/c\\accounting-user={user}' {config_path}"
-        out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
-        command = f"sed -i '/^outdir/c\\outdir={outdir}' {config_path}"
-        out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
-        command = f"sed -i '/^webdir/c\\webdir={webdir}' {config_path}"
-        out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
-        command = f"sed -i '/^request-memory=/c\\request-memory=8' {config_path}"
-        out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
-        command = f"sed -i '/^request-disk/c\\request-disk=16' {config_path}"
-        out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
+
+        self._log(f"Event {event}: reconfiguring {config_path}")
+        self._log(f"Event {event}: outdir={outdir}", level="DEBUG")
+        self._log(f"Event {event}: webdir={webdir}", level="DEBUG")
+        self._log(f"Event {event}: accounting-user={user}", level="DEBUG")
+
+        replacements = [
+            (f"/^label/c\\label={event}_p2", "label"),
+            (f"/^accounting-user/c\\accounting-user={user}", "accounting-user"),
+            (f"/^outdir/c\\outdir={outdir}", "outdir"),
+            (f"/^webdir/c\\webdir={webdir}", "webdir"),
+            ("/^request-memory=/c\\request-memory=8", "request-memory"),
+            ("/^request-disk/c\\request-disk=16", "request-disk"),
+        ]
+
+        for sed_expr, field_name in replacements:
+            command = f"sed -i '{sed_expr}' {config_path}"
+            self.run_cmd(command, shell=True, capture_output=True, text=True)
+            self._log(f"Event {event}: updated {field_name}", level="DEBUG")
+
         bilby_pipe_analysis_path = shutil.which("bilby_pipe_analysis")
         if bilby_pipe_analysis_path is None:
             raise FileNotFoundError(
                 "Could not find 'bilby_pipe_analysis' on PATH. Activate the intended bilby_pipe environment first."
             )
+
         command = f"sed -i '/^analysis-executable=/c\\analysis-executable={bilby_pipe_analysis_path}' {config_path}"
-        out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
+        self.run_cmd(command, shell=True, capture_output=True, text=True)
+        self._log(f"Event {event}: analysis-executable={bilby_pipe_analysis_path}", level="DEBUG")
+
         command = f"sed -i '/^submit=/c\\submit=condor' {config_path}"
-        out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
+        self.run_cmd(command, shell=True, capture_output=True, text=True)
+        self._log(f"Event {event}: submit backend set to condor", level="DEBUG")
+
         if self.apx == 'NRSur7dq4':
             command = f"sed -i '/^additional-transfer-paths=/c\\additional-transfer-paths=[\/scratch\/lalsimulation/NRSur7dq4_v1.0.h5]' {config_path}"
-            out = self.run_cmd(command, shell=True,  capture_output=True, text=True)
+            self.run_cmd(command, shell=True, capture_output=True, text=True)
+            self._log(f"Event {event}: configured NRSur7dq4 transfer path", level="DEBUG")
 
         cmd = [
             "sed", "-Ei",
@@ -265,18 +301,23 @@ class PERerun:
             config_path
             ]
 
-        out = self.run_cmd(cmd, shell=False)
-        # print(out)
+        self.run_cmd(cmd, shell=False)
+        self._log(f"Event {event}: updated a_1 prior if matching line was present", level="DEBUG")
+
         cmd = [
             "sed", "-Ei",
             r"s/[[:space:]]*a_2[[:space:]]*=[[:space:]]*Uniform[[:space:]]*\([[:space:]]*name[[:space:]]*=[[:space:]]*'a_2',[[:space:]]*minimum[[:space:]]*=[[:space:]]*0,[[:space:]]*maximum[[:space:]]*=[[:space:]]*0\.99[[:space:]]*\)/ a_2 = PowerLaw(name='a_2', minimum=0, maximum=1, alpha=2)/g",
             config_path
             ]
 
-        out = self.run_cmd(cmd, shell=False)
+        self.run_cmd(cmd, shell=False)
+        self._log(f"Event {event}: updated a_2 prior if matching line was present", level="DEBUG")
+
         sampler_kwargs = "sampler-kwargs={'nlive': 2000, 'naccept': 60, 'check_point_plot': True, 'check_point_delta_t': 1800, 'print_method': 'interval-60', 'sample': 'acceptance-walk', 'npool': 16, 'dlogz': 0.01}"
         command = f"sed -i '/^sampler-kwargs/c\\{sampler_kwargs}' {config_path}"
-        out = self.run_cmd(command)
+        self.run_cmd(command)
+        self._log(f"Event {event}: updated sampler kwargs")
+        self._log(f"Event {event}: reconfiguration complete")
 
     def prepare_configs(self,
                         working_dir="/home/pe.o4/GWTC4/working",
@@ -288,11 +329,12 @@ class PERerun:
         initialization determine the search path and approximant token.
         """
 
-        message("Running find configs", message_verbosity=2)
+        self._log("Preparing local config files")
         self.source_dict = self.find_bilby_configs()
-        message("Copying inis", message_verbosity=2)
         outs, config_paths = self.copy_inis()
         self.config_paths = config_paths
+        self._log(f"Prepared {len(self.config_paths)} local config path(s)")
+        return outs, config_paths
 
     def reconfigure(self):
         """Reconfigure copied INI files for a fresh project.
@@ -300,9 +342,15 @@ class PERerun:
         Existing projects are treated as resume operations and are not
         reconfigured automatically.
         """
-        if not self.resume:
-            for event, config_path in self.config_paths.items():
-                self.reconfigure_one_ini(event)
+        if self.resume:
+            self._log("Resume mode detected; skipping automatic INI reconfiguration")
+            return
+
+        items = list(self.config_paths.items())
+        self._log(f"Reconfiguring {len(items)} copied INI file(s)")
+        for event, config_path in self._progress(items, desc="Reconfiguring configs", total=len(items)):
+            self.reconfigure_one_ini(event)
+        self._log("INI reconfiguration step complete")
 
     def read_job_status(self, event):
         """Read the persisted status and Condor cluster id for one event."""
@@ -329,18 +377,23 @@ class PERerun:
         ``status.yaml`` file.
         """
 
+        self._log(f"Querying status for {len(self.config_paths)} event(s)")
         status_dict = {}
-        for key in self.config_paths.keys():
+        for key in self._progress(list(self.config_paths.keys()), desc="Querying statuses", total=len(self.config_paths)):
 
-            status, jobid = self.read_job_status(key)
+            previous_status, jobid = self.read_job_status(key)
             status = self.query_job_status(key, jobid)
             status_dict.update({key: {'status': status, 'jobid': jobid}})
             self.update_job_status_file(key, {'status': status})
+            self._log(f"Event {key}: {previous_status} -> {status}; jobid={jobid}", level="DEBUG")
 
         df = pd.DataFrame(status_dict).T
-        print(df)
-
         self.file_jobs_statuses = df
+
+        counts = df["status"].value_counts(dropna=False).to_dict() if not df.empty else {}
+        self._log(f"Status query complete. Counts: {counts}")
+        if self.verbose:
+            print(df)
 
         return df
 
@@ -348,19 +401,22 @@ class PERerun:
         """Append an event name to ``submitted_jobs.txt``."""
 
         with open(self.submitted_jobs_list_file, "a") as file:
-        # This writes the list of strings to the file.
             file.write(f"{event}\n")
+        self._log(f"Event {event}: appended to submitted jobs ledger", level="DEBUG")
 
     def parse_submitted_jobs_list(self):
         """Load submitted and pending event lists from the local ledger."""
 
         with open(self.submitted_jobs_list_file, "r") as file:
-        # This writes the list of strings to the file.
             sub_jobs = file.readlines()
 
         self.submitted_jobs = [item.strip("\n") for item in sub_jobs if item.strip()]
         self.pending_jobs = [item for item in self.config_paths.keys() if item not in self.submitted_jobs]
 
+        self._log(
+            f"Ledger parsed: {len(self.submitted_jobs)} submitted, {len(self.pending_jobs)} pending",
+            level="DEBUG",
+        )
         return sub_jobs
 
     def query_job_status(self, event, jobid):
@@ -377,12 +433,14 @@ class PERerun:
             status = "pending"
         elif jobid is None:
             status = None
+            self._log(f"Event {event}: submitted ledger entry has no jobid; falling back to result check", level="WARNING")
         else:
             status = get_condor_job_status(jobid, 0)
-            print(jobid, status)
+            self._log(f"Event {event}: Condor status for job {jobid}: {status}", level="DEBUG")
 
         if status is None:
             status = self.check_for_completion(event)
+            self._log(f"Event {event}: inferred status from final_result directory: {status}", level="DEBUG")
 
         return status
 
@@ -401,6 +459,7 @@ class PERerun:
 
         with open(job_file, 'w') as file:
             yaml.safe_dump(status, file, sort_keys=False)
+        self._log(f"Event {event}: wrote {info} to {job_file}", level="DEBUG")
 
     def check_for_completion(self, event):
         """Infer completion from files in ``pe/final_result`` for an event."""
@@ -443,18 +502,22 @@ class PERerun:
         """
 
         self.parse_submitted_jobs_list()
+        if event not in self.config_paths:
+            raise KeyError(f"Unknown event {event!r}. Known events: {sorted(self.config_paths)}")
+
         if event not in self.submitted_jobs:
             conf_file = self.config_paths[event]
             command = ["bilby_pipe", str(conf_file), "--submit"]
+            self._log(f"Event {event}: submitting with config {conf_file}")
             out = self.run_cmd(command, shell=False)
             stdout = out.stdout
             jobid = self._parse_jobid_from_bilby_pipe_stdout(stdout)
             self.add_to_submitted_jobs_list(event)
             self.update_job_status_file(event, {"jobid": jobid, "status": "submitted"})
-            print(f"Submitted {event} with jobid {jobid}")
+            self._log(f"Event {event}: submitted successfully with Condor cluster id {jobid}")
             return out
         else:
-            print(f"Job {event} previosly submitted")
+            self._log(f"Event {event}: already present in submitted jobs ledger; skipping submission", level="WARNING")
             return None
 
     def submit_next_job(self):
@@ -463,13 +526,12 @@ class PERerun:
         self.parse_submitted_jobs_list()
 
         if not self.pending_jobs:
-            print("No pending jobs to submit")
+            self._log("No pending jobs to submit")
             return None
 
         event = self.pending_jobs[0]
-        out = self.submit_one_job(event)
-        print(f"Submitted {event}")
-        return out
+        self._log(f"Submitting next pending event: {event}")
+        return self.submit_one_job(event)
 
     def submit_jobs(self, njobs=1):
         """Submit up to ``njobs`` pending events.
@@ -490,27 +552,32 @@ class PERerun:
         if njobs < 0:
             raise ValueError("njobs must be non-negative")
 
+        to_submit = self.pending_jobs[:njobs]
+        self._log(f"Submitting up to {njobs} job(s); {len(to_submit)} pending job(s) selected")
+
         outs = []
-        for event in self.pending_jobs[:njobs]:
+        for event in self._progress(to_submit, desc="Submitting jobs", total=len(to_submit)):
             outs.append(self.submit_one_job(event))
-            print(f"Submitted {event}")
 
         if len(outs) < njobs:
-            print(f"Requested {njobs} jobs but only {len(outs)} pending jobs were available")
+            self._log(f"Requested {njobs} jobs but only {len(outs)} pending jobs were available", level="WARNING")
 
         return outs
 
     def load(self):
         """Discover source config files without copying or submitting jobs."""
+        self._log("Loading source config discovery only; no copy, reconfigure, or submission will be performed")
         self.source_dict = self.find_bilby_configs()
         return self.source_dict
 
     def run(self):
         """Run the full prepare, reconfigure, ledger-load, and status-query flow."""
 
+        self._log("Starting PERerun workflow")
         self.prepare_configs()
         self.reconfigure()
         self.parse_submitted_jobs_list()
         status = self.all_job_status()
+        self._log("PERerun workflow complete")
 
         return status
