@@ -26,6 +26,8 @@ class PERerun:
         if not os.path.exists(self.project_dir):
             os.makedirs(self.project_dir)
 
+        os.chdir(self.project_dir)
+
         self.submitted_jobs_list_file = self.project_dir/"submitted_jobs.txt"
         
         if not os.path.isfile(self.submitted_jobs_list_file):
@@ -327,9 +329,10 @@ class PERerun:
             jobid = stdout.split("\n")[1].split(" ")[-1][:-1]
             self.add_to_submitted_jobs_list(event)
             self.update_job_status_file(event, {"jobid": jobid})
+            print(f"Submitted {event} with jobid {jobid}")
+            return out
         else:
             print(f"Job {event} previosly submitted")
-        return out
 
     def submit_next_job(self):
 
