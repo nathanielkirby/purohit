@@ -77,6 +77,45 @@ def test_find_bilby_configs_falls_back_to_last_available_config_for_missing_appr
     assert "falling back" in captured.out
 
 
+def test_find_bilby_configs_reuses_cached_source_manifest(tmp_path, monkeypatch):
+    working_dir = tmp_path / "working"
+    cfg = working_dir / "S240001a" / "bilby-NRSur7dq4.ini"
+    _make_config(cfg)
+    project_dir = tmp_path / "project"
+
+    rerun = PERerun(working_dir=working_dir, project_dir=project_dir)
+    assert rerun.find_bilby_configs() == {"S240001a": str(cfg)}
+    assert (project_dir / "source_config_manifest.yaml").is_file()
+
+    monkeypatch.setattr(
+        PERerun,
+        "_scan_matching_ini_files",
+        lambda self: (_ for _ in ()).throw(AssertionError("cache should avoid rescan")),
+    )
+    rerun_cached = PERerun(working_dir=working_dir, project_dir=project_dir)
+
+    assert rerun_cached.find_bilby_configs() == {"S240001a": str(cfg)}
+
+
+def test_copy_inis_skips_existing_files_even_when_resuming(tmp_path):
+    source = tmp_path / "working" / "S240001a" / "bilby-NRSur7dq4.ini"
+    _make_config(source)
+    project_dir = tmp_path / "project"
+    dest = project_dir / "working" / "S240001a" / source.name
+    dest.parent.mkdir(parents=True)
+    dest.write_text("already copied")
+    (project_dir / "submitted_jobs.txt").write_text("S240000a\n")
+
+    rerun = PERerun(working_dir=tmp_path / "working", project_dir=project_dir)
+    rerun.source_dict = {"S240001a": str(source)}
+
+    copied, config_paths = rerun.copy_inis()
+
+    assert copied == {"S240001a": "skipped_existing"}
+    assert config_paths == {"S240001a": dest}
+    assert dest.read_text() == "already copied"
+
+
 def test_copy_inis_copies_on_fresh_project(tmp_path):
     source = tmp_path / "working" / "S240001a" / "bilby-NRSur7dq4.ini"
     _make_config(source)
