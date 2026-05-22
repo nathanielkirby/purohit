@@ -39,26 +39,38 @@ HEALTH_HTML = """<!doctype html>
     table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
     th, td { text-align: left; border-bottom: 1px solid rgba(128,128,128,0.25); padding: 0.45rem; font-size: 0.9rem; vertical-align: top; }
     code, pre { padding: 0.1rem 0.25rem; border-radius: 4px; background: rgba(128,128,128,0.15); }
-    pre { padding: 0.75rem; overflow-x: auto; white-space: pre-wrap; }
+    pre { padding: 0.75rem; overflow-x: auto; white-space: pre-wrap; max-height: 22rem; }
+    details { margin: 0.35rem 0; }
     .muted { opacity: 0.72; }
     .small { font-size: 0.82rem; }
   </style>
 </head>
 <body>
   <h1>Purohit manager health</h1>
-  <p class="muted">Diagnostics for the CGI-mailbox control chain and the static manager process.</p>
+  <p class="muted">Diagnostics for the CGI-mailbox/tunnel control chain and the static manager process.</p>
   <div id="summary" class="card">Loading...</div>
   <h2>Manager</h2><div id="manager" class="card"></div>
-  <h2>Mailbox / CGI</h2><div id="mailbox" class="card"></div>
+  <h2>Mailbox / ingress</h2><div id="mailbox" class="card"></div>
   <h2>Environment checks</h2><div id="checks" class="card"></div>
   <h2>Recent command results</h2><div id="commands" class="card"></div>
   <h2>Environment variables</h2><div id="env" class="card"></div>
 <script>
 function fmt(x) { return x === null || x === undefined || x === "" ? "—" : x; }
+function esc(x) { return String(x ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 function dt(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "—"; }
 function yes(x) { return x ? "yes" : "no"; }
 function table(rows) { return `<table><tbody>${rows.map(([k,v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("")}</tbody></table>`; }
-function objectTable(obj) { return table(Object.entries(obj || {}).map(([k,v]) => [k, typeof v === "object" ? `<pre>${JSON.stringify(v, null, 2)}</pre>` : fmt(v)])); }
+function objectTable(obj) { return table(Object.entries(obj || {}).map(([k,v]) => [k, typeof v === "object" ? `<pre>${esc(JSON.stringify(v, null, 2))}</pre>` : esc(fmt(v))])); }
+function detailsBlock(label, value) { return value ? `<details><summary>${label}</summary><pre>${esc(value)}</pre></details>` : ""; }
+function commandDetails(r) {
+  const lines = [];
+  if (r.returncode !== null && r.returncode !== undefined) lines.push(`<div><strong>return code:</strong> ${esc(r.returncode)}</div>`);
+  if (r.command_line) lines.push(`<div><strong>command:</strong> <code>${esc(Array.isArray(r.command_line) ? r.command_line.join(" ") : r.command_line)}</code></div>`);
+  if (r.message) lines.push(`<div><strong>message:</strong> ${esc(r.message)}</div>`);
+  lines.push(detailsBlock("stdout", r.stdout));
+  lines.push(detailsBlock("stderr", r.stderr));
+  return lines.join("");
+}
 async function refresh() {
   const healthResp = await fetch(`health.json?ts=${Date.now()}`, {cache: "no-store"});
   const h = await healthResp.json();
@@ -69,18 +81,18 @@ async function refresh() {
   document.getElementById("summary").className = `card ${(stale || lb || h.last_error) ? "warn" : "ok"}`;
   document.getElementById("summary").innerHTML = `<strong>Status:</strong> ${(stale || lb || h.last_error) ? "needs attention" : "healthy"}<br><span class="small muted">Generated ${dt(h.generated_at)}</span>`;
   document.getElementById("manager").innerHTML = table([
-    ["host", fmt(h.manager?.host)], ["pid", fmt(h.manager?.pid)], ["started", dt(h.manager?.started_at)],
-    ["last cycle", dt(h.manager?.last_cycle_at)], ["uptime seconds", fmt(Math.round(h.manager?.uptime_seconds || 0))],
-    ["cycle duration seconds", fmt(h.manager?.last_cycle_duration_s)], ["interval seconds", fmt(h.manager?.interval_s)],
-    ["plot interval seconds", fmt(h.manager?.plot_interval_s)], ["stale", yes(h.manager?.stale)],
-    ["python", fmt(h.manager?.python_executable)], ["cwd", fmt(h.manager?.cwd)]
+    ["host", esc(fmt(h.manager?.host))], ["pid", esc(fmt(h.manager?.pid))], ["started", dt(h.manager?.started_at)],
+    ["last cycle", dt(h.manager?.last_cycle_at)], ["uptime seconds", esc(fmt(Math.round(h.manager?.uptime_seconds || 0)))],
+    ["cycle duration seconds", esc(fmt(h.manager?.last_cycle_duration_s))], ["interval seconds", esc(fmt(h.manager?.interval_s))],
+    ["plot interval seconds", esc(fmt(h.manager?.plot_interval_s))], ["stale", yes(h.manager?.stale)],
+    ["python", esc(fmt(h.manager?.python_executable))], ["cwd", esc(fmt(h.manager?.cwd))]
   ]);
   document.getElementById("mailbox").innerHTML = objectTable(h.mailbox || {});
   const checks = h.environment_checks || {};
-  document.getElementById("checks").innerHTML = `<table><thead><tr><th>Check</th><th>OK</th><th>Value</th></tr></thead><tbody>${Object.entries(checks).map(([k,v]) => `<tr><td>${k}</td><td>${yes(v.ok)}</td><td>${fmt(v.value || v.error)}</td></tr>`).join("")}</tbody></table>`;
+  document.getElementById("checks").innerHTML = `<table><thead><tr><th>Check</th><th>OK</th><th>Value</th></tr></thead><tbody>${Object.entries(checks).map(([k,v]) => `<tr><td>${esc(k)}</td><td>${yes(v.ok)}</td><td>${esc(fmt(v.value || v.error))}</td></tr>`).join("")}</tbody></table>`;
   const results = cr.results || [];
-  document.getElementById("commands").innerHTML = results.length ? `<table><thead><tr><th>processed</th><th>ok</th><th>action</th><th>event</th><th>message/jobid</th><th>queued host</th></tr></thead><tbody>${results.map(r => `<tr><td>${dt(r.processed_at)}</td><td>${yes(r.ok)}</td><td>${fmt(r.action)}</td><td>${fmt(r.event)}</td><td>${fmt(r.jobid || r.message)}</td><td>${fmt(r.queued_host)}</td></tr>`).join("")}</tbody></table>` : "No commands processed yet.";
-  document.getElementById("env").innerHTML = `<p class="small muted">Mode: ${fmt(h.environment?.mode)}. Sensitive-looking values are redacted unless full env mode is explicitly requested.</p>${objectTable(h.environment?.variables || {})}`;
+  document.getElementById("commands").innerHTML = results.length ? `<table><thead><tr><th>processed</th><th>ok</th><th>action</th><th>event</th><th>details</th><th>queued host</th></tr></thead><tbody>${results.map(r => `<tr><td>${dt(r.processed_at)}</td><td>${yes(r.ok)}</td><td>${esc(fmt(r.action))}</td><td>${esc(fmt(r.event))}</td><td>${commandDetails(r)}</td><td>${esc(fmt(r.queued_host))}</td></tr>`).join("")}</tbody></table>` : "No commands processed yet.";
+  document.getElementById("env").innerHTML = `<p class="small muted">Mode: ${esc(fmt(h.environment?.mode))}. Sensitive-looking values are redacted unless full env mode is explicitly requested.</p>${objectTable(h.environment?.variables || {})}`;
 }
 refresh().catch(err => { document.getElementById("summary").textContent = `error: ${err}`; });
 setInterval(() => refresh().catch(console.error), 30000);
@@ -96,13 +108,6 @@ def is_sensitive_env_key(key: str) -> bool:
 
 
 def collect_environment(mode: str = "redacted") -> dict[str, Any]:
-    """Collect environment variables for public diagnostics.
-
-    ``names`` publishes only variable names, ``redacted`` publishes values but
-    masks sensitive-looking variables, and ``full`` publishes raw values. The
-    default should remain ``redacted`` for public_html deployments.
-    """
-
     variables: dict[str, Any] = {}
     for key in sorted(os.environ):
         value = os.environ[key]
@@ -136,6 +141,14 @@ def collect_environment_checks(project_dir: Path, webdir: Path) -> dict[str, dic
     return checks
 
 
+def _short_text(value: Any, limit: int = 20000) -> str:
+    text = "" if value is None else str(value)
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return text[:limit] + f"\n... <truncated {omitted} characters>"
+
+
 def sanitize_command_result(result: dict[str, Any]) -> dict[str, Any]:
     command = result.get("command") if isinstance(result.get("command"), dict) else {}
     return {
@@ -146,6 +159,10 @@ def sanitize_command_result(result: dict[str, Any]) -> dict[str, Any]:
         "command_id": command.get("id"),
         "queued_host": command.get("cgi_host"),
         "jobid": result.get("jobid"),
+        "returncode": result.get("returncode"),
+        "command_line": result.get("command_line"),
+        "stdout": _short_text(result.get("stdout")),
+        "stderr": _short_text(result.get("stderr")),
         "message": result.get("message") or result.get("error"),
     }
 
@@ -210,7 +227,4 @@ def publish_health_files(
     webdir = webdir.expanduser().resolve()
     atomic_write_text(webdir / "health.html", HEALTH_HTML)
     atomic_write_json(webdir / "health.json", health_payload)
-    atomic_write_json(
-        webdir / "command_results.json",
-        {"generated_at": time.time(), "results": command_results},
-    )
+    atomic_write_json(webdir / "command_results.json", {"generated_at": time.time(), "results": command_results})

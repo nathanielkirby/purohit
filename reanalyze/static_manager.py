@@ -138,6 +138,26 @@ def run_checked(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=True, capture_output=True, text=True)
 
 
+def command_display(command: Any) -> str:
+    if isinstance(command, (list, tuple)):
+        return " ".join(str(part) for part in command)
+    return str(command)
+
+
+def called_process_error_result(exc: subprocess.CalledProcessError, *, event: str | None, action: str | None) -> dict[str, Any]:
+    command_line = [str(part) for part in exc.cmd] if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd)
+    return {
+        "ok": False,
+        "event": event,
+        "action": action,
+        "returncode": exc.returncode,
+        "command_line": command_line,
+        "stdout": exc.stdout or "",
+        "stderr": exc.stderr or "",
+        "message": f"Command failed with exit status {exc.returncode}: {command_display(exc.cmd)}",
+    }
+
+
 def submit_event(project_dir: Path, event: str) -> dict[str, Any]:
     if event in submitted_jobs(project_dir):
         return {"ok": False, "message": f"event {event} is already in submitted_jobs.txt"}
@@ -146,7 +166,7 @@ def submit_event(project_dir: Path, event: str) -> dict[str, Any]:
     jobid = parse_cluster_id(out.stdout)
     append_submitted(project_dir, event)
     write_status(event_dir(project_dir, event), {"jobid": jobid, "status": "submitted"})
-    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout}
+    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout, "stderr": out.stderr}
 
 
 def jobid_for_event(project_dir: Path, event: str) -> str:
@@ -161,21 +181,73 @@ def hold_event(project_dir: Path, event: str) -> dict[str, Any]:
     jobid = jobid_for_event(project_dir, event)
     out = run_checked(["condor_hold", jobid])
     write_status(event_dir(project_dir, event), {"status": "held"})
-    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout}
+    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout, "stderr": out.stderr}
 
 
 def release_event(project_dir: Path, event: str) -> dict[str, Any]:
     jobid = jobid_for_event(project_dir, event)
     out = run_checked(["condor_release", jobid])
     write_status(event_dir(project_dir, event), {"status": "submitted"})
-    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout}
+    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout, "stderr": out.stderr}
 
 
 def remove_event(project_dir: Path, event: str) -> dict[str, Any]:
     jobid = jobid_for_event(project_dir, event)
     out = run_checked(["condor_rm", jobid])
     write_status(event_dir(project_dir, event), {"status": "removed"})
-    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout}
+    return {"ok": True, "event": event, "jobid": jobid, "stdout": out.stdout, "stderr": out.stderr}
+
+
+def _safe_remove_path(path: Path, event_directory: Path) -> str | None:
+    resolved = path.resolve()
+    event_resolved = event_directory.resolve()
+    if resolved == event_resolved or event_resolved not in resolved.parents:
+        raise ValueError(f"Refusing to remove path outside event directory: {path}")
+    if not path.exists():
+        return None
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return str(path)
+
+
+def reset_event(project_dir: Path, event: str) -> dict[str, Any]:
+    edir = event_dir(project_dir, event)
+    if not edir.is_dir():
+        raise FileNotFoundError(f"Event directory does not exist: {edir}")
+
+    removed_paths: list[str] = []
+    for name in RESETTABLE_OUTPUT_DIRS:
+        removed = _safe_remove_path(edir / name, edir)
+        if removed:
+            removed_paths.append(removed)
+    for pattern in RESETTABLE_PATTERNS:
+        for path in sorted(edir.glob(pattern)):
+            removed = _safe_remove_path(path, edir)
+            if removed:
+                removed_paths.append(removed)
+
+    ledger_changed = remove_submitted(project_dir, event)
+    status_path = edir / "status.yaml"
+    status = read_yaml(status_path)
+    previous_jobid = status.pop("jobid", None)
+    status.update({
+        "status": "pending",
+        "note": "Reset by static manager; ready for fresh web submission",
+        "reset_at": time.time(),
+        "previous_jobid": previous_jobid,
+    })
+    status_path.write_text(yaml.safe_dump(status, sort_keys=False))
+    return {
+        "ok": True,
+        "event": event,
+        "status": "pending",
+        "removed_from_submitted_jobs": ledger_changed,
+        "previous_jobid": previous_jobid,
+        "removed_paths": removed_paths,
+        "message": "event reset; click Submit to submit a fresh job",
+    }
 
 
 def _safe_remove_path(path: Path, event_directory: Path) -> str | None:
@@ -252,6 +324,8 @@ def process_command(project_dir: Path, command: dict[str, Any]) -> dict[str, Any
             result = reset_event(project_dir, event)
         else:  # pragma: no cover - guarded by SUPPORTED_ACTIONS
             result = {"ok": False, "message": f"unhandled action {action}"}
+    except subprocess.CalledProcessError as exc:
+        result = called_process_error_result(exc, event=event, action=action)
     except Exception as exc:  # noqa: BLE001 - operational command audit should record failures
         result = {"ok": False, "event": event, "action": action, "message": str(exc)}
     result["command"] = command
