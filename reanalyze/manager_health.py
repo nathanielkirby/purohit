@@ -33,6 +33,7 @@ HEALTH_HTML = """<!doctype html>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 2rem; line-height: 1.35; }
+    nav a { margin-right: 1rem; }
     .card { border: 1px solid rgba(128,128,128,0.25); border-radius: 12px; padding: 1rem; margin: 1rem 0; }
     .warn { border-color: #b91c1c; background: rgba(185,28,28,0.08); }
     .ok { border-color: #047857; background: rgba(4,120,87,0.08); }
@@ -47,6 +48,7 @@ HEALTH_HTML = """<!doctype html>
 </head>
 <body>
   <h1>Purohit manager health</h1>
+  <nav><a href="index.html">Monitor</a><a href="tunnel.html">Commands</a><a href="files.html">Files</a><a href="health.html">Health</a></nav>
   <p class="muted">Diagnostics for the CGI-mailbox/tunnel control chain and the static manager process.</p>
   <div id="summary" class="card">Loading...</div>
   <h2>Manager</h2><div id="manager" class="card"></div>
