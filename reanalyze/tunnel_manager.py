@@ -71,6 +71,7 @@ function fmt(x) { return x === null || x === undefined || x === "" ? "—" : x; 
 function setStatus(message, kind="") { const r = document.getElementById("result"); r.className = `status ${kind ? `status-${kind}` : ""} small`; r.textContent = message; }
 function endpoint() { return (document.getElementById("endpoint").value || DEFAULT_ENDPOINT).replace(/\/$/, ""); }
 function token() { return document.getElementById("token").value || localStorage.getItem("purohit_tunnel_token") || ""; }
+function eventLink(job) { const label = fmt(job.event); const href = job.event_page || `events/${encodeURIComponent(String(job.event || "unknown"))}/index.html`; return `<a href="${href}">${label}</a>`; }
 function saveEndpoint() { localStorage.setItem("purohit_tunnel_endpoint", endpoint()); setStatus("Endpoint saved in this browser.", "ok"); }
 function resetEndpoint() { localStorage.removeItem("purohit_tunnel_endpoint"); document.getElementById("endpoint").value = DEFAULT_ENDPOINT; setStatus("Endpoint reset to the default local tunnel endpoint.", "ok"); refresh(); }
 function saveToken(button) { localStorage.setItem("purohit_tunnel_token", document.getElementById("token").value || ""); document.getElementById("token-status").textContent = "Token saved in this browser."; setButtonState(button, "success", "Saved ✓"); setStatus("Token saved in this browser.", "ok"); restoreButton(button); }
@@ -106,7 +107,7 @@ async function refresh() {
   const ping = await pingTunnel(); setStatus(ping.message, ping.ok ? "ok" : "error");
   const statusResponse = await fetch(`status.json?ts=${Date.now()}`, {cache: "no-store"});
   const status = await statusResponse.json();
-  document.getElementById("jobs").innerHTML = (status.jobs || []).map(job => `<tr><td>${fmt(job.event)}</td><td>${fmt(job.status)}</td><td>${fmt(job.jobid)}</td><td>${controls(job.event)}</td></tr>`).join("") || `<tr><td colspan="4">No jobs found.</td></tr>`;
+  document.getElementById("jobs").innerHTML = (status.jobs || []).map(job => `<tr><td>${eventLink(job)}</td><td>${fmt(job.status)}</td><td>${fmt(job.jobid)}</td><td>${controls(job.event)}</td></tr>`).join("") || `<tr><td colspan="4">No jobs found.</td></tr>`;
 }
 refresh().catch(err => setStatus(`refresh error: ${err}`, "error"));
 setInterval(() => refresh().catch(console.error), 30000);
