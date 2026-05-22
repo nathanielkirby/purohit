@@ -33,10 +33,9 @@ from reanalyze.static_manager import append_audit, process_command
 from reanalyze.static_monitor import publish_once
 
 QUEUE_FILENAME = "tunnel_commands.jsonl"
-
 TUNNEL_CONFIG_FILENAME = "tunnel_config.json"
 
-TUNNEL_APP_HTML = """<!doctype html>
+TUNNEL_APP_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -47,7 +46,6 @@ TUNNEL_APP_HTML = """<!doctype html>
     body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 2rem; line-height: 1.35; }
     nav a { margin-right: 1rem; }
     .card { border: 1px solid rgba(128,128,128,0.25); border-radius: 12px; padding: 1rem; margin: 1rem 0; }
-    .warn { border-color: #b91c1c; background: rgba(185,28,28,0.08); }
     table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
     th, td { text-align: left; border-bottom: 1px solid rgba(128,128,128,0.25); padding: 0.55rem; font-size: 0.9rem; vertical-align: top; }
     code, input { padding: 0.15rem 0.35rem; border-radius: 4px; background: rgba(128,128,128,0.15); }
@@ -72,7 +70,7 @@ TUNNEL_APP_HTML = """<!doctype html>
   <p class="muted">Requires an SSH tunnel, for example <code>ssh -N -L 8766:127.0.0.1:8766 citlogin5</code>.</p>
   <div class="card">
     <div><strong>Endpoint:</strong> <input id="endpoint" value="http://127.0.0.1:8766"><button class="btn" onclick="saveEndpoint()">Save endpoint</button></div>
-    <div><strong>Token:</strong> <input id="token" type="password"><button class="btn btn-primary" onclick="saveToken(this)">Save token</button></div>
+    <div><strong>Token:</strong> <input id="token" type="password" oninput="markTokenUnsaved()"><button class="btn btn-primary" onclick="saveToken(this)">Save token</button> <span id="token-status" class="small muted">Token not checked yet.</span></div>
     <div id="result" class="status small">No tunnel command queued yet.</div>
   </div>
   <div class="card">
@@ -83,18 +81,24 @@ const ORIGINAL_LABEL = "data-original-label";
 function fmt(x) { return x === null || x === undefined || x === "" ? "—" : x; }
 function setStatus(message, kind="") { const r = document.getElementById("result"); r.className = `status ${kind ? `status-${kind}` : ""} small`; r.textContent = message; }
 function endpoint() { return (document.getElementById("endpoint").value || "http://127.0.0.1:8766").replace(/\/$/, ""); }
-function token() { return localStorage.getItem("purohit_tunnel_token") || document.getElementById("token").value || ""; }
+function token() { return document.getElementById("token").value || localStorage.getItem("purohit_tunnel_token") || ""; }
 function saveEndpoint() { localStorage.setItem("purohit_tunnel_endpoint", endpoint()); setStatus("Endpoint saved in this browser.", "ok"); }
-function saveToken(button) { localStorage.setItem("purohit_tunnel_token", document.getElementById("token").value || ""); setButtonState(button, "success", "Saved ✓"); setStatus("Token saved in this browser.", "ok"); restoreButton(button); }
+function saveToken(button) { localStorage.setItem("purohit_tunnel_token", document.getElementById("token").value || ""); document.getElementById("token-status").textContent = "Token saved in this browser."; setButtonState(button, "success", "Saved ✓"); setStatus("Token saved in this browser.", "ok"); restoreButton(button); }
+function markTokenUnsaved() { const saved = localStorage.getItem("purohit_tunnel_token") || ""; const current = document.getElementById("token").value || ""; document.getElementById("token-status").textContent = current === saved && current ? "Token is saved in this browser." : "Token edited; click Save token to persist it."; }
 function setButtonState(button, state, label) { if (!button) return; if (!button.hasAttribute(ORIGINAL_LABEL)) button.setAttribute(ORIGINAL_LABEL, button.textContent); button.classList.remove("btn-pending", "btn-success", "btn-error"); if (state) button.classList.add(`btn-${state}`); if (label) button.textContent = label; button.disabled = state === "pending"; }
 function restoreButton(button, delay=1800) { if (!button) return; const original = button.getAttribute(ORIGINAL_LABEL) || button.textContent; setTimeout(() => { button.classList.remove("btn-pending", "btn-success", "btn-error"); button.textContent = original; button.disabled = false; }, delay); }
 function controls(event) { return `<button class="btn btn-primary" onclick="sendCommand(this,'submit_event','${event}')">Submit</button><button class="btn" onclick="sendCommand(this,'hold_event','${event}')">Hold</button><button class="btn" onclick="sendCommand(this,'release_event','${event}')">Release</button><button class="btn btn-danger" onclick="sendCommand(this,'remove_event','${event}')">Remove</button>`; }
+async function readJsonSafely(response) {
+  const text = await response.text();
+  try { return JSON.parse(text); } catch { return {error: text.slice(0, 300)}; }
+}
 async function sendCommand(button, action, event) {
   if (action === "remove_event" && !confirm(`Remove ${event}?`)) return;
   setButtonState(button, "pending", "Queueing…"); setStatus(`Queueing ${action} for ${event}...`, "pending");
   try {
     const response = await fetch(`${endpoint()}/api/command`, {method: "POST", headers: {"Content-Type": "application/json", "X-Purohit-Token": token()}, body: JSON.stringify({action, event})});
-    const data = await response.json();
+    const data = await readJsonSafely(response);
+    if (response.status === 401) throw new Error("401 Unauthorized: token mismatch or token not saved");
     if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
     setButtonState(button, "success", "Queued ✓");
     setStatus(`Queued ${action} for ${event}. Command ID: ${data.command?.id || "unknown"}.`, "ok");
@@ -102,12 +106,21 @@ async function sendCommand(button, action, event) {
   } catch (err) { setButtonState(button, "error", "Failed ✗"); setStatus(`Command failed: ${err}`, "error"); restoreButton(button, 3500); }
 }
 async function pingTunnel() {
-  try { const r = await fetch(`${endpoint()}/api/health`, {headers: {"X-Purohit-Token": token()}}); return r.ok; } catch { return false; }
+  try {
+    const r = await fetch(`${endpoint()}/api/health`, {headers: {"X-Purohit-Token": token()}});
+    if (r.status === 401) return {ok: false, kind: "unauthorized", message: "Tunnel reachable, but token was rejected. Paste the token from the manager token file and click Save token."};
+    if (!r.ok) return {ok: false, kind: "http", message: `Tunnel reachable, but /api/health returned HTTP ${r.status}.`};
+    return {ok: true, message: "Tunnel endpoint is reachable and authorized."};
+  } catch (err) {
+    return {ok: false, kind: "network", message: `Tunnel endpoint is not reachable from this browser: ${err}. Start ssh -N -L 8766:127.0.0.1:8766 citlogin5 and the tunnel manager.`};
+  }
 }
 async function refresh() {
   const savedEndpoint = localStorage.getItem("purohit_tunnel_endpoint"); if (savedEndpoint) document.getElementById("endpoint").value = savedEndpoint;
   const savedToken = localStorage.getItem("purohit_tunnel_token"); if (savedToken && !document.getElementById("token").value) document.getElementById("token").value = savedToken;
-  const ok = await pingTunnel(); if (!ok) setStatus("Tunnel endpoint is not reachable yet. Start ssh -N -L 8766:127.0.0.1:8766 citlogin5 and the tunnel manager.", "error");
+  markTokenUnsaved();
+  const ping = await pingTunnel();
+  setStatus(ping.message, ping.ok ? "ok" : "error");
   const statusResponse = await fetch(`status.json?ts=${Date.now()}`, {cache: "no-store"});
   const status = await statusResponse.json();
   document.getElementById("jobs").innerHTML = (status.jobs || []).map(job => `<tr><td>${fmt(job.event)}</td><td>${fmt(job.status)}</td><td>${fmt(job.jobid)}</td><td>${controls(job.event)}</td></tr>`).join("") || `<tr><td colspan="4">No jobs found.</td></tr>`;
@@ -119,7 +132,7 @@ setInterval(() => refresh().catch(console.error), 30000);
 </html>
 """
 
-FILES_HTML = """<!doctype html>
+FILES_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -137,6 +150,7 @@ FILES_HTML = """<!doctype html>
     button { margin: 0.08rem; border: 1px solid rgba(128,128,128,0.35); border-radius: 6px; padding: 0.32rem 0.55rem; cursor: pointer; }
     pre { padding: 0.75rem; overflow-x: auto; white-space: pre-wrap; background: rgba(128,128,128,0.10); border-radius: 8px; max-height: 70vh; }
     .muted { opacity: 0.72; }
+    .error { color: #b91c1c; }
   </style>
 </head>
 <body>
@@ -145,7 +159,7 @@ FILES_HTML = """<!doctype html>
   <p class="muted">Read-only browser through the SSH tunnel. Paths are constrained to manager-configured roots.</p>
   <div class="card">
     <div><strong>Endpoint:</strong> <input id="endpoint" value="http://127.0.0.1:8766"><button onclick="saveEndpoint()">Save</button></div>
-    <div><strong>Token:</strong> <input id="token" type="password"><button onclick="saveToken()">Save token</button></div>
+    <div><strong>Token:</strong> <input id="token" type="password"><button onclick="saveToken()">Save token</button> <span id="token-status" class="muted">Token not checked yet.</span></div>
     <div><strong>Root:</strong> <select id="root" onchange="loadDir('')"></select> <strong>Path:</strong> <code id="path"></code></div>
     <div id="message" class="muted"></div>
   </div>
@@ -153,14 +167,24 @@ FILES_HTML = """<!doctype html>
   <div id="viewer" class="card" style="display:none"><h2 id="viewer-title"></h2><pre id="viewer-content"></pre></div>
 <script>
 function endpoint() { return (document.getElementById("endpoint").value || "http://127.0.0.1:8766").replace(/\/$/, ""); }
-function token() { return localStorage.getItem("purohit_tunnel_token") || document.getElementById("token").value || ""; }
-function saveEndpoint() { localStorage.setItem("purohit_tunnel_endpoint", endpoint()); }
-function saveToken() { localStorage.setItem("purohit_tunnel_token", document.getElementById("token").value || ""); }
+function token() { return document.getElementById("token").value || localStorage.getItem("purohit_tunnel_token") || ""; }
+function saveEndpoint() { localStorage.setItem("purohit_tunnel_endpoint", endpoint()); document.getElementById("message").textContent = "Endpoint saved."; }
+function saveToken() { localStorage.setItem("purohit_tunnel_token", document.getElementById("token").value || ""); document.getElementById("token-status").textContent = "Token saved in this browser."; }
 function fmtSize(n) { if (n === null || n === undefined) return "—"; if (n < 1024) return `${n} B`; if (n < 1024*1024) return `${(n/1024).toFixed(1)} KiB`; return `${(n/1024/1024).toFixed(1)} MiB`; }
-async function api(path) { const r = await fetch(`${endpoint()}${path}`, {headers: {"X-Purohit-Token": token()}}); const d = await r.json(); if (!r.ok || !d.ok) throw new Error(d.error || `HTTP ${r.status}`); return d; }
+async function api(path) {
+  let r;
+  try { r = await fetch(`${endpoint()}${path}`, {headers: {"X-Purohit-Token": token()}}); }
+  catch (err) { throw new Error(`tunnel endpoint is not reachable from this browser: ${err}`); }
+  const text = await r.text();
+  let d;
+  try { d = JSON.parse(text); } catch { d = {error: text.slice(0, 300)}; }
+  if (r.status === 401) throw new Error("401 Unauthorized: token mismatch or token not saved");
+  if (!r.ok || !d.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
 async function init() {
   const savedEndpoint = localStorage.getItem("purohit_tunnel_endpoint"); if (savedEndpoint) document.getElementById("endpoint").value = savedEndpoint;
-  const savedToken = localStorage.getItem("purohit_tunnel_token"); if (savedToken) document.getElementById("token").value = savedToken;
+  const savedToken = localStorage.getItem("purohit_tunnel_token"); if (savedToken && !document.getElementById("token").value) document.getElementById("token").value = savedToken;
   const d = await api("/api/files/roots");
   document.getElementById("root").innerHTML = d.roots.map(r => `<option value="${r.id}">${r.label}</option>`).join("");
   await loadDir("");
@@ -174,8 +198,9 @@ async function loadDir(path) {
     const up = d.path ? `<tr><td><a href="#" onclick="loadDir('${d.parent_path || ""}'); return false;">..</a></td><td>dir</td><td>—</td><td>—</td><td></td></tr>` : "";
     const rows = d.entries.map(e => `<tr><td>${e.type === "dir" ? `<a href="#" onclick="loadDir('${e.path}'); return false;">${e.name}/</a>` : e.name}</td><td>${e.type}</td><td>${fmtSize(e.size)}</td><td>${e.mtime ? new Date(e.mtime * 1000).toLocaleString() : "—"}</td><td>${e.type === "file" ? `<button onclick="viewFile('${e.path}')">View</button> <a href="${endpoint()}/api/files/download?root=${encodeURIComponent(root)}&path=${encodeURIComponent(e.path)}&token=${encodeURIComponent(token())}">Download</a>` : ""}</td></tr>`).join("");
     document.getElementById("entries").innerHTML = up + rows;
+    document.getElementById("message").className = "muted";
     document.getElementById("message").textContent = `${d.entries.length} entries`;
-  } catch (err) { document.getElementById("message").textContent = `error: ${err}`; }
+  } catch (err) { document.getElementById("message").className = "error"; document.getElementById("message").textContent = `error: ${err}`; }
 }
 async function viewFile(path) {
   try {
@@ -184,9 +209,9 @@ async function viewFile(path) {
     document.getElementById("viewer").style.display = "block";
     document.getElementById("viewer-title").textContent = path;
     document.getElementById("viewer-content").textContent = d.content;
-  } catch (err) { document.getElementById("message").textContent = `error: ${err}`; }
+  } catch (err) { document.getElementById("message").className = "error"; document.getElementById("message").textContent = `error: ${err}`; }
 }
-init().catch(err => { document.getElementById("message").textContent = `error: ${err}`; });
+init().catch(err => { document.getElementById("message").className = "error"; document.getElementById("message").textContent = `error: ${err}`; });
 </script>
 </body>
 </html>
