@@ -95,18 +95,25 @@ heartbeat || true
 """
 
 
-def _condor_quote_arg(value) -> str:
-    """Quote one argument for HTCondor's submit-file argument parser.
+def _condor_new_syntax_arg(value) -> str:
+    """Render one argv element inside HTCondor's new ``arguments`` syntax.
 
-    ``shlex.quote`` is shell quoting, not HTCondor submit-language quoting.  In
-    particular, single quotes are not grouping quotes in the old Condor
-    ``arguments = ...`` syntax on all pools, so a command template such as
-    ``pyRing --config-file {config}`` can be split into several argv elements.
-    Use double quotes for grouping and double any embedded double quotes.
+    New syntax requires the whole arguments string to be double-quoted.  Spaces
+    delimit argv entries, so a single argv element containing spaces must be
+    surrounded by single quotes inside that outer double-quoted string.  Literal
+    single quotes inside such an element are doubled; literal double quotes are
+    doubled because the outer string is double-quoted.
     """
 
-    text = str(value)
-    return '"' + text.replace('"', '""') + '"'
+    text = str(value).replace('"', '""')
+    if text == "" or any(ch.isspace() for ch in text):
+        return "'" + text.replace("'", "''") + "'"
+    return text
+
+
+def _condor_arguments_line(arguments) -> str:
+    rendered = " ".join(_condor_new_syntax_arg(item) for item in arguments)
+    return f'arguments = "{rendered}"'
 
 
 class ManifestRerun(PERerun):
@@ -314,7 +321,7 @@ class ManifestRerun(PERerun):
             "universe = vanilla",
             f"executable = {self.wrapper_path.resolve()}",
             "initialdir = " + str(event_dir.resolve()),
-            "arguments = " + " ".join(_condor_quote_arg(item) for item in arguments),
+            _condor_arguments_line(arguments),
             f"request_cpus = {self.request_cpus}",
             f"request_memory = {self.request_memory}",
             f"request_disk = {self.request_disk}",
