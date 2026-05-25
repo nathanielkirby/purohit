@@ -1,6 +1,6 @@
 # Bilby input staging
 
-Purohit can stage local files referenced by copied bilby `.ini` files before submitting a job. This is useful when the config contains paths to PSDs, calibration-envelope files, data dumps, prior files, injection files, ROQ assets, or lookup tables that are readable on one CIT account but not on the submit account.
+Purohit can stage local files referenced by copied bilby `.ini` files before submitting a job. This is useful when the config contains paths to PSDs, calibration-envelope files, data dumps, prior files, injection files, ROQ assets, or lookup tables that are readable on one account or host but not on the submit account.
 
 The feature is disabled by default. Enable it by creating:
 
@@ -14,35 +14,24 @@ Use this when the submit account can see the same filesystem path after files ar
 
 ```yaml
 enabled: true
+transfer_enabled: false
 
-# Default mode. Copies files locally and rewrites the config to local staged paths.
-mode: local
-
-# Optional. Defaults to the current project dir.
 local_project_dir: /home/vaishak.prasad/Projects/ligo/rean5
-
-# Defaults to working/<event>.
 event_subdir: working/{event}
-
 stage_subdir: staged_inputs
 rewrite_config_suffix: .staged.ini
 
-# Only paths below these roots will be copied. Leave empty to allow any readable file.
 copy_roots:
   - /home/vaishak.prasad/Projects/ligo/rean5
   - /home/vaishak.prasad/Projects/ligo/shared_inputs
 
-# These are treated as already globally available and are not copied.
 preserve_roots:
   - /cvmfs
   - /archive
   - /frames
   - /hdfs
 
-# Raise if a path-looking value under a selected key does not exist.
 strict_missing: false
-
-# Record sha256 checksums in the manifest.
 hash_files: true
 ```
 
@@ -56,35 +45,94 @@ working/<event>/input_manifest.json
 
 and submits the staged config.
 
-## Remote account mode: first implementation
+## Host-aware transfer mode
 
-This PR intentionally implements the conservative first stage of remote support: copy files into a local staging directory and optionally rewrite paths to a remote prefix. You can then sync the staged directory to the submit account using your preferred transport, e.g. `rsync`, `scp`, or a shared group copy.
-
-Example:
+Set `transfer_enabled: auto` to make the transfer decision from the current hostname.
 
 ```yaml
 enabled: true
-mode: local
+transfer_enabled: auto
+cit_hostname_contains: ligo.caltech.edu
+
+# If hostname does not contain ligo.caltech.edu, transfer is enabled automatically.
+# If hostname cannot be determined, Purohit refuses to transfer/submit and reports a warning/error.
+
+# If this is true, transfer is also enabled from CIT hosts.
+transfer_from_cit: true
+
+target_host: gwave@citlogin5.ligo.caltech.edu
+remote_project_dir: /home/gwave/Projects/ligo/rean5
+
+event_subdir: working/{event}
 stage_subdir: staged_inputs
 rewrite_config_suffix: .gwave.ini
 
-# If set, paths inside the rewritten config point here instead of the local staging dir.
-remote_stage_prefix: /home/gwave/Projects/ligo/rean5/working/{event}/staged_inputs
+rsync_args:
+  - -a
+  - --partial
+  - --protect-args
+
+copy_roots:
+  - /home/vaishak.prasad/Projects/ligo/rean5
+  - /home/vaishak.prasad/Projects/ligo/shared_inputs
+
+preserve_roots:
+  - /cvmfs
+  - /archive
+  - /frames
+  - /hdfs
 ```
 
-Then sync manually or from a wrapper:
+The effective policy is:
 
-```bash
-rsync -a --partial \
-  /home/vaishak.prasad/Projects/ligo/rean5/working/S240413p/staged_inputs/ \
-  gwave@citlogin5.ligo.caltech.edu:/home/gwave/Projects/ligo/rean5/working/S240413p/staged_inputs/
+```text
+hostname contains ligo.caltech.edu and transfer_from_cit is false:
+  stage locally only
 
-rsync -a --partial \
-  /home/vaishak.prasad/Projects/ligo/rean5/working/S240413p/*gwave.ini \
-  gwave@citlogin5.ligo.caltech.edu:/home/gwave/Projects/ligo/rean5/working/S240413p/
+hostname contains ligo.caltech.edu and transfer_from_cit is true:
+  stage locally, rsync staged files/config/manifest to target_host
+
+hostname does not contain ligo.caltech.edu:
+  stage locally, rsync staged files/config/manifest to target_host
+
+hostname cannot be determined:
+  refuse transfer/submission and report a warning/error
 ```
 
-A later PR can add a fully automatic rsync backend once the exact gwave SSH route, account policy, and target layout are stable.
+For each event, the remote target is constructed as:
+
+```text
+<remote_project_dir>/<event_subdir>/<stage_subdir>/
+```
+
+so for `event = S240413p` the default target is:
+
+```text
+/home/gwave/Projects/ligo/rean5/working/S240413p/staged_inputs/
+```
+
+Purohit also transfers the rewritten config and manifest to:
+
+```text
+/home/gwave/Projects/ligo/rean5/working/S240413p/<original>.gwave.ini
+/home/gwave/Projects/ligo/rean5/working/S240413p/input_manifest.json
+```
+
+The submitted config path is rewritten to the remote path when transfer is enabled.
+
+## Host override for testing
+
+For tests or unusual hosts, you can force hostname classification:
+
+```yaml
+hostname_override: citlogin5.ligo.caltech.edu
+```
+
+or
+
+```yaml
+hostname_override: laptop.example.org
+```
 
 ## What gets detected
 
@@ -103,14 +151,19 @@ Only values that look path-like and resolve to existing files are copied. Dictio
 ```json
 {
   "event": "S240413p",
+  "hostname": "citlogin5.ligo.caltech.edu",
+  "transfer_enabled": true,
+  "transfer_target": "gwave@citlogin5.ligo.caltech.edu",
   "source_config": "...complete.ini",
-  "rewritten_config": "...complete.staged.ini",
+  "rewritten_config": "/home/gwave/.../complete.gwave.ini",
   "files": [
     {
       "section": "DEFAULT",
       "key": "psd_dict",
       "source": "/original/H1_psd.dat",
-      "staged": "/staged/H1_psd.dat",
+      "staged": "/home/gwave/.../staged_inputs/H1_psd.dat",
+      "local_staged": ".../working/S240413p/staged_inputs/H1_psd.dat",
+      "remote_staged": "/home/gwave/.../staged_inputs/H1_psd.dat",
       "size_bytes": 12345,
       "sha256": "..."
     }
@@ -124,7 +177,8 @@ The event `status.yaml` is also updated with `staged_config`, `input_manifest`, 
 
 This is intentionally conservative:
 
+- staging is opt-in;
 - missing files are ignored unless `strict_missing: true`;
 - global roots like `/cvmfs` are preserved by default;
-- no network copy is attempted by this first PR;
+- automatic transfer requires a known hostname and `target_host`;
 - the original config is never modified in place.
