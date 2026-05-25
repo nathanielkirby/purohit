@@ -295,7 +295,7 @@ def event_detail_html(event: str) -> str:
 <body>
   <h1 id="title">Purohit event detail</h1>
   <nav><a href="../../index.html">Monitor</a><a href="../../tunnel.html">Commands</a><a href="../../files.html">Files</a><a href="../../health.html">Health</a></nav>
-  <p class="muted">Products are served live from this event's working/output roots only. Parent and sibling directories are not exposed.</p>
+  <p class="muted">Products are served live from this event's working/output roots only. Parent and sibling directories are not exposed. Legacy copied product links are also supported while older status files age out.</p>
   <div id="summary" class="card">Loading...</div>
   <h2>Live outputs and plots</h2><div id="outputs" class="card"></div>
   <h2>Condor DAG jobs</h2><div id="jobs" class="card"></div>
@@ -310,9 +310,20 @@ function esc(x) { return String(x ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<
 function statusClass(status) { return `status-${String(status || "unknown").toLowerCase()}`; }
 function row(label, value) { return `<tr><th>${esc(label)}</th><td>${esc(fmt(value))}</td></tr>`; }
 function table(rows) { return `<table><tbody>${rows.join("")}</tbody></table>`; }
-function isImage(item) { return item.kind === "image"; }
+function isImage(item) { return item.kind === "image" || /\.(png|jpe?g|svg|webp|gif)(\?|$)/i.test(productHref(item)); }
+function productHref(item) { return item.api_href || item.href || ""; }
+function productUrl(item) {
+  const href = productHref(item);
+  if (!href) return "";
+  const separator = href.includes("?") ? "&" : "?";
+  return `../../${href}${separator}_=${encodeURIComponent(item.mtime || Date.now())}`;
+}
 async function fetchBlob(item) {
-  const r = await fetch(`../../${item.api_href}&_=${encodeURIComponent(item.mtime || Date.now())}`, {headers: {"X-Purohit-Token": token()}, cache: "no-store"});
+  const url = productUrl(item);
+  if (!url) throw new Error("product has no api_href or href; wait for the monitor to regenerate status.json");
+  const options = {cache: "no-store"};
+  if (item.api_href) options.headers = {"X-Purohit-Token": token()};
+  const r = await fetch(url, options);
   if (r.status === 401) throw new Error("token rejected; open login.html and save the token");
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return await r.blob();
