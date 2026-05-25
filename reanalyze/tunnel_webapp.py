@@ -20,7 +20,7 @@ import threading
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from reanalyze.output_products import apply as apply_output_products
+from reanalyze.output_products import apply as apply_output_products, serve_event_product
 from reanalyze.tunnel_manager import (
     Handler,
     TunnelState,
@@ -54,7 +54,7 @@ LOGIN_HTML = r"""<!doctype html>
   <nav><a href="index.html">Monitor</a><a href="tunnel.html">Commands</a><a href="files.html">Files</a><a href="health.html">Health</a></nav>
 
   <div class="card">
-    <p class="muted">Static monitor pages are readable through the SSH tunnel. Commands, health checks, and file browsing use the local API and require the token printed by the cluster-side manager.</p>
+    <p class="muted">Static monitor pages are readable through the SSH tunnel. Commands, health checks, and event-scoped product access use the local API and require the token printed by the cluster-side manager.</p>
     <label for="token"><strong>Token</strong></label><br>
     <input id="token" type="password" autocomplete="off" placeholder="Paste token from the remote token file">
     <button onclick="saveAndTest()">Sign in</button>
@@ -95,7 +95,7 @@ async function saveAndTest() {
     const r = await fetch(`${endpoint()}/api/health`, {headers: {"X-Purohit-Token": token}});
     if (r.status === 401) throw new Error("token rejected");
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    setStatus("Signed in. Command and file APIs are authorized for this browser.", "ok");
+    setStatus("Signed in. Commands, health checks, and event products are authorized for this browser.", "ok");
   } catch (err) {
     setStatus(`Sign-in failed: ${err}`, "error");
   }
@@ -135,6 +135,9 @@ class StaticFirstHandler(Handler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/event-product":
+            serve_event_product(self, parse_qs(parsed.query))
+            return
         if parsed.path.startswith("/api/"):
             super().do_GET()
             return
