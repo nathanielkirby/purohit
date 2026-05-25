@@ -4,12 +4,11 @@ from pathlib import Path
 
 import yaml
 
-from reanalyze.host_profiles import HostProfile, HostProfiles
+from reanalyze.host_profiles import HostProfiles
 from reanalyze.remote_import import (
     event_data_path,
-    find_event_config if False else home_relative_path,
+    home_relative_path,
     parse_ini_dependencies_text,
-    replace_paths,
 )
 from reanalyze.static_manager import find_event_config
 
