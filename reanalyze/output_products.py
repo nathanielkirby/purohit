@@ -47,6 +47,25 @@ def _coerce_path(value: Any) -> Path | None:
         return None
 
 
+def should_publish_product(path: Path, extensions: tuple[str, ...]) -> bool:
+    """Return whether a run product should be copied into the webdir.
+
+    We keep checkpoint *state* files out by default because they can be large and
+    are not useful in a browser, but checkpoint *plots* are first-class monitor
+    products.  Hence a filename containing ``checkpoint`` is allowed when the
+    suffix is browser-viewable, such as PNG/PDF/SVG/HTML.
+    """
+
+    if not path.is_file():
+        return False
+    suffix = path.suffix.lower()
+    if suffix not in extensions:
+        return False
+    if "checkpoint" in path.name.lower() and suffix not in FIRST_CLASS_EXTENSIONS:
+        return False
+    return True
+
+
 def _event_output_roots(event_dir: Path) -> list[tuple[str, Path]]:
     from reanalyze import static_monitor
 
@@ -94,7 +113,7 @@ def _product_priority(item: tuple[str, Path, Path]) -> tuple[int, int, str]:
     suffix = path.suffix.lower()
     name = path.name.lower()
     first_class = 0 if suffix in FIRST_CLASS_EXTENSIONS else 1
-    plot_like = 0 if any(word in name for word in ("plot", "corner", "posterior", "trace", "skymap", "waveform", "diagnostic")) else 1
+    plot_like = 0 if any(word in name for word in ("plot", "corner", "posterior", "trace", "skymap", "waveform", "diagnostic", "checkpoint")) else 1
     return (first_class, plot_like, str(path))
 
 
@@ -123,7 +142,7 @@ def publish_event_outputs(event_dir: Path, webdir: Path, event: str, extensions:
                 continue
             if resolved in seen_paths:
                 continue
-            if static_monitor.should_publish_output(path, extensions):
+            if should_publish_product(path, extensions):
                 seen_paths.add(resolved)
                 candidates.append((root_label, root, path))
 
