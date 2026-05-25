@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from reanalyze.input_staging import stage_bilby_inputs
@@ -20,7 +21,7 @@ def test_staging_disabled_returns_original_config(tmp_path):
     assert staged.config_path == config
 
 
-def test_stages_and_rewrites_existing_input_file(tmp_path):
+def test_stages_and_rewrites_existing_input_file_without_transfer(tmp_path):
     project = tmp_path / "project"
     control = project / "control"
     control.mkdir(parents=True)
@@ -32,11 +33,12 @@ def test_stages_and_rewrites_existing_input_file(tmp_path):
     event_dir.mkdir(parents=True)
     config = event_dir / "config.ini"
     config.write_text(f"psd_file = {psd}\n")
-    (control / "staging.yaml").write_text(yaml.safe_dump({"enabled": True, "copy_roots": [str(project)]}))
+    (control / "staging.yaml").write_text(yaml.safe_dump({"enabled": True, "transfer_enabled": False, "copy_roots": [str(project)]}))
 
     staged = stage_bilby_inputs(project, "S1", config)
 
     assert staged.enabled is True
+    assert staged.transfer_enabled is False
     assert staged.config_path.name == "config.staged.ini"
     assert staged.manifest_path is not None
     rewritten = staged.config_path.read_text()
@@ -45,7 +47,7 @@ def test_stages_and_rewrites_existing_input_file(tmp_path):
     assert (event_dir / "staged_inputs" / "H1_psd.dat").read_text() == "1 2\n"
 
 
-def test_preserves_cvmfs_path(tmp_path):
+def test_preserves_cvmfs_path_without_transfer(tmp_path):
     project = tmp_path / "project"
     control = project / "control"
     control.mkdir(parents=True)
@@ -53,10 +55,53 @@ def test_preserves_cvmfs_path(tmp_path):
     event_dir.mkdir(parents=True)
     config = event_dir / "config.ini"
     config.write_text("basis_file = /cvmfs/example/basis.hdf5\n")
-    (control / "staging.yaml").write_text(yaml.safe_dump({"enabled": True}))
+    (control / "staging.yaml").write_text(yaml.safe_dump({"enabled": True, "transfer_enabled": False}))
 
     staged = stage_bilby_inputs(project, "S1", config)
 
     assert staged.enabled is True
     assert "/cvmfs/example/basis.hdf5" in staged.config_path.read_text()
     assert staged.copied_files == ()
+
+
+def test_auto_transfer_is_enabled_off_cit_and_requires_target_host(tmp_path):
+    project = tmp_path / "project"
+    control = project / "control"
+    control.mkdir(parents=True)
+    event_dir = project / "working" / "S1"
+    event_dir.mkdir(parents=True)
+    config = event_dir / "config.ini"
+    config.write_text("psd_file = /tmp/nope.dat\n")
+    (control / "staging.yaml").write_text(yaml.safe_dump({"enabled": True, "hostname_override": "laptop.example.org"}))
+
+    with pytest.raises(ValueError, match="target_host is required"):
+        stage_bilby_inputs(project, "S1", config)
+
+
+def test_auto_transfer_is_disabled_on_cit_unless_requested(tmp_path):
+    project = tmp_path / "project"
+    control = project / "control"
+    control.mkdir(parents=True)
+    event_dir = project / "working" / "S1"
+    event_dir.mkdir(parents=True)
+    config = event_dir / "config.ini"
+    config.write_text("psd_file = /tmp/nope.dat\n")
+    (control / "staging.yaml").write_text(yaml.safe_dump({"enabled": True, "hostname_override": "citlogin5.ligo.caltech.edu"}))
+
+    staged = stage_bilby_inputs(project, "S1", config)
+
+    assert staged.transfer_enabled is False
+
+
+def test_transfer_from_cit_true_requires_target_host(tmp_path):
+    project = tmp_path / "project"
+    control = project / "control"
+    control.mkdir(parents=True)
+    event_dir = project / "working" / "S1"
+    event_dir.mkdir(parents=True)
+    config = event_dir / "config.ini"
+    config.write_text("psd_file = /tmp/nope.dat\n")
+    (control / "staging.yaml").write_text(yaml.safe_dump({"enabled": True, "hostname_override": "citlogin5.ligo.caltech.edu", "transfer_from_cit": True}))
+
+    with pytest.raises(ValueError, match="target_host is required"):
+        stage_bilby_inputs(project, "S1", config)
