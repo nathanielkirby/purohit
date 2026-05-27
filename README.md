@@ -52,6 +52,10 @@ Copy the script in ```$REPO/scripts/init_env.sh``` to a location outside $REPO, 
 
 5. Start the monitor
 
+6. Start the front-end (laptop side) server:
+
+   ```scripts/open_laptop_tunnel.sh cit (or gwave) --local-port 8767 --remote-port 8766```
+
 ## What Purohit does
 
 Purohit supports three related workflows:
