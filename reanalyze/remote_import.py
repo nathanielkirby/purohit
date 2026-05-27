@@ -49,8 +49,21 @@ class EventImportResult:
     dependencies: tuple[dict[str, Any], ...]
 
 
+def _format_command(command: list[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in command)
+
+
 def run_checked(command: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, input=input_text, check=True, capture_output=True, text=True)
+    proc = subprocess.run(command, input=input_text, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "Command failed\n"
+            f"  command: {_format_command(command)}\n"
+            f"  returncode: {proc.returncode}\n"
+            f"  stdout:\n{proc.stdout or '<empty>'}\n"
+            f"  stderr:\n{proc.stderr or '<empty>'}"
+        )
+    return proc
 
 
 def sha256_file(path: Path) -> str:
@@ -72,7 +85,8 @@ def rsync_pull(source_host: HostProfile, source_path: str, target_path: Path, rs
 
 
 def run_remote_python(source_host: HostProfile, code: str, args: list[str]) -> str:
-    command = ["ssh", source_host.require_ssh(), "python3", "-", *args]
+    remote_command = " ".join(shlex.quote(str(part)) for part in ["python3", "-", *args])
+    command = ["ssh", source_host.require_ssh(), remote_command]
     out = run_checked(command, input_text=code)
     return out.stdout
 
