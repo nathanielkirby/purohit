@@ -49,6 +49,11 @@ class EventImportResult:
     dependencies: tuple[dict[str, Any], ...]
 
 
+def _log(message: str, *, verbose: bool = True) -> None:
+    if verbose:
+        print(f"[purohit remote-import] {message}", flush=True)
+
+
 def _format_command(command: list[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in command)
 
@@ -127,9 +132,28 @@ print(json.dumps({'source_dir': str(source_dir), 'events': {event: {'source_ini'
 '''
 
 
-def discover_remote_configs(source_host: HostProfile, source_dir: str, apx: str, events: list[str] | None = None, approvals: dict[str, str] | None = None) -> dict[str, Any]:
+def discover_remote_configs(
+    source_host: HostProfile,
+    source_dir: str,
+    apx: str,
+    events: list[str] | None = None,
+    approvals: dict[str, str] | None = None,
+    *,
+    verbose: bool = True,
+) -> dict[str, Any]:
+    event_note = f"{len(events)} requested event(s)" if events else "all matching events"
+    approval_note = f"{len(approvals or {})} approval token(s)"
+    _log(
+        f"discovering configs on {source_host.name} via {source_host.require_ssh()} "
+        f"under {source_dir!r} for apx={apx!r} ({event_note}, {approval_note})",
+        verbose=verbose,
+    )
+    start = time.time()
     stdout = run_remote_python(source_host, REMOTE_DISCOVERY_CODE, [source_dir, apx, ",".join(events or []), json.dumps(approvals or {})])
-    return json.loads(stdout)
+    discovery = json.loads(stdout)
+    n_events = len(discovery.get("events", {}))
+    _log(f"discovery complete: selected {n_events} event(s) in {time.time() - start:.1f} s", verbose=verbose)
+    return discovery
 
 
 def parse_ini_dependencies_text(text: str, *, preserve_roots: list[str] | None = None, path_key_hints: tuple[str, ...] = PATH_KEY_HINTS) -> list[Dependency]:
@@ -195,19 +219,23 @@ def materialize_event(
     data_subdir: str = "data",
     submit_suffix: str = ".target.ini",
     rsync_args: list[str] | None = None,
+    verbose: bool = True,
 ) -> EventImportResult:
     event_dir = target_project_dir / "working" / event
     original_dir = event_dir / "original"
     original_dir.mkdir(parents=True, exist_ok=True)
     original_ini = original_dir / (Path(source_ini).name.replace(".ini", ".source.ini"))
+    _log(f"{event}: copying source INI {source_ini} -> {original_ini}", verbose=verbose)
     rsync_pull(source_host, source_ini, original_ini, rsync_args=rsync_args)
 
     ini_text = original_ini.read_text()
     dependencies = parse_ini_dependencies_text(ini_text, preserve_roots=preserve_roots)
+    _log(f"{event}: found {len(dependencies)} dependency file(s) to stage", verbose=verbose)
     replacements: dict[str, str] = {}
     copied: list[dict[str, Any]] = []
-    for dep in dependencies:
+    for index, dep in enumerate(dependencies, start=1):
         target_path = event_data_path(target_project_dir, event, dep.source_path, source_host.require_home(), data_subdir=data_subdir)
+        _log(f"{event}: staging dependency {index}/{len(dependencies)} [{dep.kind}] {dep.source_path}", verbose=verbose)
         rsync_pull(source_host, dep.source_path, target_path, rsync_args=rsync_args)
         replacements[dep.source_path] = str(target_path)
         copied.append({
@@ -262,6 +290,7 @@ def materialize_event(
         "input_manifest": str(manifest_path),
     })
     status_path.write_text(yaml.safe_dump(status, sort_keys=False))
+    _log(f"{event}: wrote submit INI {submit_ini} and manifest {manifest_path}", verbose=verbose)
     return EventImportResult(event=event, source_ini=source_ini, original_ini=original_ini, submit_ini=submit_ini, manifest_path=manifest_path, dependencies=tuple(copied))
 
 
@@ -279,14 +308,23 @@ def import_events(
     submit_suffix: str = ".target.ini",
     preserve_roots: list[str] | None = None,
     rsync_args: list[str] | None = None,
+    verbose: bool = True,
 ) -> dict[str, Any]:
     profiles = HostProfiles.load(hosts_file)
     source_host = profiles[source_host_name]
     target_host = profiles[target_host_name]
     target_project = target_project_dir or target_host.require_project_dir()
-    discovery = discover_remote_configs(source_host, source_dir, apx, events=events, approvals=approvals)
+    _log(
+        f"starting import: source={source_host_name}, target={target_host_name}, "
+        f"target_project={target_project}",
+        verbose=verbose,
+    )
+    discovery = discover_remote_configs(source_host, source_dir, apx, events=events, approvals=approvals, verbose=verbose)
+    selected_events = sorted(discovery.get("events", {}).items())
+    _log(f"materializing {len(selected_events)} selected event(s)", verbose=verbose)
     results = []
-    for event, info in sorted(discovery.get("events", {}).items()):
+    for index, (event, info) in enumerate(selected_events, start=1):
+        _log(f"event {index}/{len(selected_events)}: {event}", verbose=verbose)
         result = materialize_event(
             event=event,
             source_ini=info["source_ini"],
@@ -297,6 +335,7 @@ def import_events(
             data_subdir=data_subdir,
             submit_suffix=submit_suffix,
             rsync_args=rsync_args,
+            verbose=verbose,
         )
         results.append({
             "event": result.event,
@@ -309,5 +348,7 @@ def import_events(
     imports_dir = target_project / "control" / "imports"
     imports_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    (imports_dir / f"import-{source_host_name}-to-{target_host_name}-{stamp}.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    summary_path = imports_dir / f"import-{source_host_name}-to-{target_host_name}-{stamp}.json"
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    _log(f"import complete: wrote summary {summary_path}", verbose=verbose)
     return summary
