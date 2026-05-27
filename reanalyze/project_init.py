@@ -85,6 +85,11 @@ def _require_profile(profiles: HostProfiles, name: str | None, role: str) -> Hos
     return profiles[name]
 
 
+def _log(message: str, *, verbose: bool = True) -> None:
+    if verbose:
+        print(f"[purohit init-project] {message}", flush=True)
+
+
 def init_project(
     *,
     hosts_file: Path,
@@ -121,6 +126,7 @@ def init_project(
     elif working_dir is not None and Path(source_dir) != Path(working_dir):
         raise ValueError("Pass only source_dir=...; working_dir=... is a deprecated PERerun alias")
 
+    _log(f"loading host profiles from {hosts_file}", verbose=verbose)
     profiles = HostProfiles.load(hosts_file)
     current = profiles.detect_current()
     source = profiles[source_host_name]
@@ -137,6 +143,16 @@ def init_project(
     use_remote = mode == "remote" or (mode == "auto" and not is_on_source)
 
     approvals = {str(key): str(value) for key, value in (approvals or {}).items()}
+    _log(
+        f"mode={'local' if use_local else 'remote'} current={_profile_name(current)} "
+        f"source={source.name} target={target.name} target_project={target_project}",
+        verbose=verbose,
+    )
+    _log(
+        f"source_dir={source_dir} apx={apx} approvals={len(approvals)} "
+        f"events_requested={len(events or []) if events else 'all'}",
+        verbose=verbose,
+    )
 
     summary: dict[str, Any] = {
         "generated_at": time.time(),
@@ -164,6 +180,7 @@ def init_project(
     }
 
     if use_local:
+        _log("preparing configs with local PERerun path", verbose=verbose)
         rerun = PERerun(
             source_dir=source_dir,
             project_dir=target_project,
@@ -180,18 +197,24 @@ def init_project(
             verbose=verbose,
             progress=progress,
         )
+        _log("discovering/preparing source configs", verbose=verbose)
         rerun.prepare_configs()
         if events:
             selected = set(events)
+            before = len(rerun.config_paths)
             rerun.config_paths = {event: path for event, path in rerun.config_paths.items() if event in selected}
             rerun.source_dict = {event: path for event, path in rerun.source_dict.items() if event in selected}
+            _log(f"filtered local configs from {before} to {len(rerun.config_paths)} requested event(s)", verbose=verbose)
+        _log("rewriting local configs for target project", verbose=verbose)
         rerun.reconfigure()
+        _log("parsing submitted jobs list", verbose=verbose)
         rerun.parse_submitted_jobs_list()
         summary["events"] = [
             {"event": event, "submit_ini": str(path), "dependency_count": None}
             for event, path in sorted(rerun.config_paths.items())
         ]
     elif use_remote:
+        _log("importing configs and inputs from remote source host", verbose=verbose)
         remote_summary = import_events(
             hosts_file=hosts_file,
             source_host_name=source.name,
@@ -205,6 +228,7 @@ def init_project(
             submit_suffix=submit_suffix,
             preserve_roots=preserve_roots,
             rsync_args=rsync_args,
+            verbose=verbose and progress,
         )
         summary["events"] = remote_summary.get("events", [])
         summary["remote_import"] = remote_summary
@@ -212,7 +236,9 @@ def init_project(
         raise RuntimeError("unreachable project initialization mode")
 
     if create_token:
-        summary["token_file"] = str(_ensure_token(target_project, token_file))
+        token_path = _ensure_token(target_project, token_file)
+        summary["token_file"] = str(token_path)
+        _log(f"token file ready: {token_path}", verbose=verbose)
 
     init_summary_path = target_project / "control" / "project_init_summary.json"
     init_config_path = target_project / "control" / "project_init.yaml"
@@ -232,6 +258,8 @@ def init_project(
     )
     summary["project_init_summary"] = str(init_summary_path)
     summary["project_init_config"] = str(init_config_path)
+    _log(f"initialization summary written to {init_summary_path}", verbose=verbose)
+    _log(f"initialization config written to {init_config_path}", verbose=verbose)
     return summary
 
 
@@ -256,8 +284,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-cache-config-discovery", action="store_true")
     parser.add_argument("--refresh-config-cache", action="store_true")
     parser.add_argument("--config-cache-file", type=Path, default=None)
-    parser.add_argument("--quiet", action="store_true", help="Set PERerun verbose=False in local mode.")
-    parser.add_argument("--no-progress", action="store_true", help="Set PERerun progress=False in local mode.")
+    parser.add_argument("--quiet", action="store_true", help="Suppress init-project and PERerun progress output.")
+    parser.add_argument("--no-progress", action="store_true", help="Disable progress-style output where supported.")
     parser.add_argument("--data-subdir", default="data")
     parser.add_argument("--submit-suffix", default=".target.ini")
     parser.add_argument("--preserve-root", action="append", default=[])
