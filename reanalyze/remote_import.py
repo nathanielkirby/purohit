@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ast
+import getpass
 import hashlib
 import json
 import os
@@ -36,6 +37,7 @@ from reanalyze.input_staging import PATH_KEY_HINTS, DEFAULT_PRESERVE_ROOTS, is_p
 class Dependency:
     key: str
     source_path: str
+    ini_path: str
     kind: str
 
 
@@ -74,7 +76,7 @@ def run_checked(command: list[str], *, input_text: str | None = None) -> subproc
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b=""):
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
 
@@ -156,7 +158,13 @@ def discover_remote_configs(
     return discovery
 
 
-def parse_ini_dependencies_text(text: str, *, preserve_roots: list[str] | None = None, path_key_hints: tuple[str, ...] = PATH_KEY_HINTS) -> list[Dependency]:
+def parse_ini_dependencies_text(
+    text: str,
+    *,
+    preserve_roots: list[str] | None = None,
+    path_key_hints: tuple[str, ...] = PATH_KEY_HINTS,
+    base_dir: str | None = None,
+) -> list[Dependency]:
     preserve = tuple(preserve_roots or DEFAULT_PRESERVE_ROOTS)
     deps: list[Dependency] = []
     for line in text.splitlines():
@@ -168,13 +176,20 @@ def parse_ini_dependencies_text(text: str, *, preserve_roots: list[str] | None =
         if not any(hint in key.lower() for hint in path_key_hints):
             continue
         for candidate in split_pathlike_value(value.strip()):
-            expanded = os.path.expandvars(os.path.expanduser(candidate.strip()))
-            if not is_probable_path(expanded) or not expanded.startswith("/"):
+            ini_path = candidate.strip()
+            expanded = os.path.expandvars(os.path.expanduser(ini_path))
+            if not is_probable_path(expanded) and not (base_dir and is_probable_relative_file(expanded)):
                 continue
-            if any(expanded == root or expanded.startswith(root.rstrip("/") + "/") for root in preserve):
+            if expanded.startswith("/"):
+                source_path = posixpath.normpath(expanded)
+            elif base_dir:
+                source_path = posixpath.normpath(posixpath.join(base_dir, expanded))
+            else:
+                continue
+            if any(source_path == root or source_path.startswith(root.rstrip("/") + "/") for root in preserve):
                 continue
             kind = classify_dependency_key(key)
-            deps.append(Dependency(key=key, source_path=expanded, kind=kind))
+            deps.append(Dependency(key=key, source_path=source_path, ini_path=ini_path, kind=kind))
     return deps
 
 
@@ -184,6 +199,11 @@ def classify_dependency_key(key: str) -> str:
         if kind in lower:
             return kind
     return "input"
+
+
+def is_probable_relative_file(value: str) -> bool:
+    name = PurePosixPath(value).name
+    return bool(name and "." in name and not any(part in {"", ".", ".."} for part in PurePosixPath(value).parts))
 
 
 def home_relative_path(path: str, source_home: Path) -> PurePosixPath:
@@ -222,13 +242,75 @@ def remove_ini_key(text: str, key: str) -> str:
     return pattern.sub("", text)
 
 
-def localize_submit_ini_text(text: str, *, preserve_osg_settings: bool = False) -> str:
-    if preserve_osg_settings:
-        return text
-    localized = remove_ini_key(text, "container")
-    localized = set_ini_value(localized, "osg", "False")
-    localized = set_ini_value(localized, "transfer-files", "False")
-    return localized
+def active_conda_env_name() -> str | None:
+    env_name = os.environ.get("CONDA_DEFAULT_ENV")
+    if env_name:
+        return env_name
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        return Path(conda_prefix).name
+    return None
+
+
+def rewrite_default_spin_priors(text: str) -> str:
+    text = re.sub(
+        r"a_1\s*=\s*Uniform\s*\(\s*name\s*=\s*'a_1',\s*minimum\s*=\s*0,\s*maximum\s*=\s*0\.99\s*\)",
+        "a_1 = PowerLaw(name='a_1', minimum=0, maximum=1, alpha=2)",
+        text,
+    )
+    text = re.sub(
+        r"\s*a_2\s*=\s*Uniform\s*\(\s*name\s*=\s*'a_2',\s*minimum\s*=\s*0,\s*maximum\s*=\s*0\.99\s*\)",
+        "a_2 = PowerLaw(name='a_2', minimum=0, maximum=1, alpha=2)",
+        text,
+    )
+    return text
+
+
+def reconfigure_submit_ini_text(
+    text: str,
+    *,
+    event: str,
+    submit_ini: Path,
+    target_project_dir: Path,
+    apx: str,
+    accounting: str | None = "ligo.dev.o4.cbc.pe.bilby",
+    accounting_user: str = "auto",
+    label_suffix: str = "_p2",
+    preserve_osg_settings: bool = False,
+) -> str:
+    analysis_executable = shutil.which("bilby_pipe")
+    if analysis_executable is None:
+        raise FileNotFoundError("Could not find 'bilby_pipe' on PATH. Activate the intended bilby_pipe environment first.")
+
+    conda_env = active_conda_env_name()
+    resolved_accounting_user = getpass.getuser() if accounting_user == "auto" else accounting_user
+    updates = {
+        "label": f"{event}{label_suffix}",
+        "outdir": str(submit_ini.parent / "pe"),
+        "webdir": str(target_project_dir / "webdir"),
+        "accounting": accounting,
+        "accounting-user": resolved_accounting_user,
+        "request-memory": "8",
+        "request-disk": "16",
+        "analysis-executable": analysis_executable,
+        "conda-env": conda_env,
+        "submit": "condor",
+        "sampler-kwargs": "{'nlive': 2000, 'naccept': 60, 'check_point_plot': True, 'check_point_delta_t': 1800, 'print_method': 'interval-60', 'sample': 'acceptance-walk', 'npool': 16, 'dlogz': 0.01}",
+    }
+    if not preserve_osg_settings:
+        updates.update({"osg": "False", "transfer-files": "False", "scheduler-env": "None"})
+    if apx == "NRSur7dq4":
+        updates["additional-transfer-paths"] = "[/scratch/lalsimulation/NRSur7dq4_v1.0.h5]"
+
+    rewritten = text
+    for key, value in updates.items():
+        if value is not None:
+            rewritten = set_ini_value(rewritten, key, str(value))
+    if conda_env is None:
+        rewritten = remove_ini_key(rewritten, "conda-env")
+    if not preserve_osg_settings:
+        rewritten = remove_ini_key(rewritten, "container")
+    return rewrite_default_spin_priors(rewritten)
 
 
 def materialize_event(
@@ -242,6 +324,10 @@ def materialize_event(
     data_subdir: str = "data",
     submit_suffix: str = ".target.ini",
     rsync_args: list[str] | None = None,
+    apx: str = "",
+    accounting: str | None = "ligo.dev.o4.cbc.pe.bilby",
+    accounting_user: str = "auto",
+    label_suffix: str = "_p2",
     preserve_osg_settings: bool = False,
     verbose: bool = True,
 ) -> EventImportResult:
@@ -253,7 +339,7 @@ def materialize_event(
     rsync_pull(source_host, source_ini, original_ini, rsync_args=rsync_args)
 
     ini_text = original_ini.read_text()
-    dependencies = parse_ini_dependencies_text(ini_text, preserve_roots=preserve_roots)
+    dependencies = parse_ini_dependencies_text(ini_text, preserve_roots=preserve_roots, base_dir=posixpath.dirname(source_ini))
     _log(f"{event}: found {len(dependencies)} dependency file(s) to stage", verbose=verbose)
     replacements: dict[str, str] = {}
     copied: list[dict[str, Any]] = []
@@ -262,10 +348,13 @@ def materialize_event(
         _log(f"{event}: staging dependency {index}/{len(dependencies)} [{dep.kind}] {dep.source_path}", verbose=verbose)
         rsync_pull(source_host, dep.source_path, target_path, rsync_args=rsync_args)
         replacements[dep.source_path] = str(target_path)
+        if dep.ini_path != dep.source_path:
+            replacements[dep.ini_path] = str(target_path)
         copied.append({
             "key": dep.key,
             "kind": dep.kind,
             "source_path": dep.source_path,
+            "ini_path": dep.ini_path,
             "target_path": str(target_path),
             "size_bytes": target_path.stat().st_size if target_path.exists() else None,
             "sha256": sha256_file(target_path) if target_path.is_file() else None,
@@ -277,10 +366,20 @@ def materialize_event(
     target_home = str(target_host.require_home()).rstrip("/")
     replacements[source_home + "/"] = target_home + "/"
     rewritten = replace_paths(ini_text, replacements)
-    rewritten = localize_submit_ini_text(rewritten, preserve_osg_settings=preserve_osg_settings)
 
     submit_ini = event_dir / (Path(source_ini).stem + submit_suffix)
     submit_ini.parent.mkdir(parents=True, exist_ok=True)
+    rewritten = reconfigure_submit_ini_text(
+        rewritten,
+        event=event,
+        submit_ini=submit_ini,
+        target_project_dir=target_project_dir,
+        apx=apx,
+        accounting=accounting,
+        accounting_user=accounting_user,
+        label_suffix=label_suffix,
+        preserve_osg_settings=preserve_osg_settings,
+    )
     with tempfile.NamedTemporaryFile("w", dir=submit_ini.parent, delete=False) as handle:
         handle.write(rewritten)
         tmp = Path(handle.name)
@@ -298,6 +397,7 @@ def materialize_event(
         "dependencies": copied,
         "path_replacements": replacements,
         "preserve_osg_settings": preserve_osg_settings,
+        "apx": apx,
     }
     manifest_path = event_dir / "input_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -315,6 +415,7 @@ def materialize_event(
         "submit_ini": str(submit_ini),
         "input_manifest": str(manifest_path),
         "preserve_osg_settings": preserve_osg_settings,
+        "apx": apx,
     })
     status_path.write_text(yaml.safe_dump(status, sort_keys=False))
     _log(f"{event}: wrote submit INI {submit_ini} and manifest {manifest_path}", verbose=verbose)
@@ -335,6 +436,9 @@ def import_events(
     submit_suffix: str = ".target.ini",
     preserve_roots: list[str] | None = None,
     rsync_args: list[str] | None = None,
+    accounting: str | None = "ligo.dev.o4.cbc.pe.bilby",
+    accounting_user: str = "auto",
+    label_suffix: str = "_p2",
     preserve_osg_settings: bool = False,
     verbose: bool = True,
 ) -> dict[str, Any]:
@@ -363,6 +467,10 @@ def import_events(
             data_subdir=data_subdir,
             submit_suffix=submit_suffix,
             rsync_args=rsync_args,
+            apx=apx,
+            accounting=accounting,
+            accounting_user=accounting_user,
+            label_suffix=label_suffix,
             preserve_osg_settings=preserve_osg_settings,
             verbose=verbose,
         )
@@ -381,6 +489,9 @@ def import_events(
         "target_project_dir": str(target_project),
         "approval_events": sorted((approvals or {}).keys()),
         "preserve_osg_settings": preserve_osg_settings,
+        "accounting": accounting,
+        "accounting_user": getpass.getuser() if accounting_user == "auto" else accounting_user,
+        "label_suffix": label_suffix,
         "events": results,
     }
     imports_dir = target_project / "control" / "imports"
