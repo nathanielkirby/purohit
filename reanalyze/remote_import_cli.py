@@ -22,6 +22,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--submit-suffix", default=".target.ini", help="Suffix for target submit INI.")
     parser.add_argument("--preserve-root", action="append", default=[], help="Absolute roots to preserve and not copy/rewrite. Repeatable.")
     parser.add_argument("--rsync-arg", action="append", default=[], help="Extra/override rsync args. If omitted, uses safe defaults.")
+    parser.add_argument("--accounting", default="ligo.dev.o4.cbc.pe.bilby")
+    parser.add_argument("--accounting-user", default="auto")
+    parser.add_argument("--label-suffix", default="_p2")
     parser.add_argument("--preserve-osg-settings", action="store_true", help="Keep source OSG/container settings instead of localizing the target INI.")
     return parser.parse_args()
 
@@ -40,6 +43,9 @@ def main() -> None:
         submit_suffix=args.submit_suffix,
         preserve_roots=args.preserve_root or None,
         rsync_args=args.rsync_arg or None,
+        accounting=args.accounting,
+        accounting_user=args.accounting_user,
+        label_suffix=args.label_suffix,
         preserve_osg_settings=args.preserve_osg_settings,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

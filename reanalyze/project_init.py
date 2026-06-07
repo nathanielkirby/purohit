@@ -233,6 +233,9 @@ def init_project(
             submit_suffix=submit_suffix,
             preserve_roots=preserve_roots,
             rsync_args=rsync_args,
+            accounting=accounting,
+            accounting_user=accounting_user,
+            label_suffix=label_suffix,
             preserve_osg_settings=preserve_osg_settings,
             verbose=verbose and progress,
         )
