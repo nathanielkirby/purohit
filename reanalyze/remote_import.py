@@ -176,7 +176,7 @@ def parse_ini_dependencies_text(
         if not any(hint in key.lower() for hint in path_key_hints):
             continue
         for candidate in split_dependency_candidates(value.strip()):
-            ini_path = candidate.strip()
+            ini_path = candidate.strip(",}{ ")
             expanded = os.path.expandvars(os.path.expanduser(ini_path))
             if not is_probable_path(expanded): # require / in candidate paths
                 continue
