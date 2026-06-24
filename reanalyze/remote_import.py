@@ -178,7 +178,7 @@ def parse_ini_dependencies_text(
         for candidate in split_dependency_candidates(value.strip()):
             ini_path = candidate.strip()
             expanded = os.path.expandvars(os.path.expanduser(ini_path))
-            if not is_probable_path(expanded) and not (base_dir and is_probable_relative_file(expanded)):
+            if not is_probable_path(expanded): # require / in candidate paths
                 continue
             if expanded.startswith("/"):
                 source_path = posixpath.normpath(expanded)
