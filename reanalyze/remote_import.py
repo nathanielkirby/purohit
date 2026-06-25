@@ -311,9 +311,10 @@ def reconfigure_submit_ini_text(
 
     conda_env = active_conda_env_name()
     resolved_accounting_user = getpass.getuser() if accounting_user == "auto" else accounting_user
+    outdir_path = str(re.sub("/home/ligo/", "/scratch2/", str(submit_ini.parent / "pe")))
     updates = {
         "label": f"{event}{label_suffix}",
-        "outdir": str(submit_ini.parent / "pe"),
+        "outdir": outdir_path,
         "webdir": str(target_project_dir / "webdir"),
         "accounting": accounting,
         "accounting-user": resolved_accounting_user,
