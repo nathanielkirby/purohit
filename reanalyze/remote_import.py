@@ -311,7 +311,7 @@ def reconfigure_submit_ini_text(
 
     conda_env = active_conda_env_name()
     resolved_accounting_user = getpass.getuser() if accounting_user == "auto" else accounting_user
-    outdir_path = str(re.sub("/home/ligo/", "/scratch2/", str(submit_ini.parent / "pe")))
+    outdir_path = str(submit_ini.resolve().parent / "pe").replace("/home/ligo/", "/scratch2/")
     updates = {
         "label": f"{event}{label_suffix}",
         "outdir": outdir_path,
@@ -333,6 +333,8 @@ def reconfigure_submit_ini_text(
         updates.update({"osg": "False", "transfer-files": "False", "scheduler-env": "None"})
     if apx == "NRSur7dq4":
         updates["additional-transfer-paths"] = "[/scratch/lalsimulation/NRSur7dq4_v1.0.h5]"
+    if "data-dict=None" in text:
+        updates.update({"transfer-files": "True"})
 
     rewritten = text
     for key, value in updates.items():
