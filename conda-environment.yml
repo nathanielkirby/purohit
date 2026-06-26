@@ -2,7 +2,7 @@ name: pur
 channels:
   - conda-forge
 dependencies:
-  - python>=3.9
+  - python=3.10
   - numpy
   - pandas
   - pyyaml
@@ -13,7 +13,9 @@ dependencies:
   - ligo-common
   - termcolor
   - pyseobnr
-  - htcondor
+  - htcondor-24.*
   - sympy
   - bilby
-  - bilby_pipe
+  - bilby_pipe=1.8.0
+  - python-nds2-client
+  - python-ldas-tools-framecpp
