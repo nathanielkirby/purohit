@@ -13,7 +13,7 @@ dependencies:
   - ligo-common
   - termcolor
   - pyseobnr
-  - htcondor-24.*
+  - htcondor=24.*
   - sympy
   - bilby
   - bilby_pipe=1.8.0
