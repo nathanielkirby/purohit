@@ -9,7 +9,9 @@ more submit hosts prepare event working directories, submit HTCondor DAGs  and p
 
 ## Installation
 
-First, create a conda env
+First, clone the repository
+
+```git clone https://github.com/nathanielkirby/purohit.git```
 
 
 ## Catalog re-analysis and Bilby PE jobs 
@@ -35,17 +37,29 @@ this will create and activate new env called `pur`
 
    ```pip install -e .```
 
-3. Also, make the below script in scripts dir executable:
-``` chomd +x scripts/*.sh```
+3. Make all scripts in the scripts dir executable:
+``` chmod +x scripts/*.sh```
 
 4. Initialize env variables
 
-Copy the script in ```$REPO/scripts/init_env.sh``` to a location outside $REPO, change it accordingly, and source it:
+Modify the script in ```$REPO/scripts/init_env.sh```
+   a. Specify the desired ```SOURCE_DIR``` and ```PROJECT_DIR``` directories
+   b. Provide a ```PROJECT_NAME``` (e.g. ```run1```)
+   c. Change the ```PORT``` to an unused value
+   d. Optionally, specify a subset of ```EVENTS```. By default all events in the ```SOURCE_DIR``` will be copied
 
+   Finally, source the script to set environment variables:
 ```source scripts/init_env.sh```
 
+5. If you are a home6 user, modify hosts.yaml to use citlogin6. The default is citlogin5.
 
-5. Initialize the project
+6. Authentication
+   a. Ensure you have an active kerberos ticket on gwave:
+      ```kinit user.name@LIGO.ORG```
+   b. Get authentication tokens:
+      ```condor_vault_storer -v igwn```
+
+7. Initialize the project
 
    A project initialization involves copying inis from the source dir to destination project dir.
 
@@ -53,16 +67,17 @@ Copy the script in ```$REPO/scripts/init_env.sh``` to a location outside $REPO, 
 
    ``` ./scripts/init_project.sh```
 
-6. Start the back-end (cluster-side) monitor
+8. Start the back-end (cluster-side) monitor
    ```./scripts/start_cluster_manager.sh start ```
 
    other possible args are ```stop, status, restart```
    
-8. Start the front-end (laptop side) server:
+9. Start the front-end (laptop side) server:
 
    ```scripts/open_laptop_tunnel.sh cit (or gwave)```
 
-
+10. You can now launch jobs from your web browser. If jobs do not enter the queue within a few minutes of launching, try restarting the manager
+   ```./scripts/star_cluster_manager.sh restart```
 
 
 ## What Purohit does
