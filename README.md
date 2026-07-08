@@ -72,7 +72,7 @@ Modify the script in ```$REPO/scripts/init_env.sh```
 
    other possible args are ```stop, status, restart```
    
-9. Start the front-end (laptop side) server:
+9. Clone the repository on your laptop, and start the front-end (laptop side) server:
 
    ```scripts/open_laptop_tunnel.sh cit (or gwave)```
 
