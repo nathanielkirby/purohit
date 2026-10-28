@@ -19,6 +19,14 @@ if [[ -n "${TARGET_HOST}" ]]; then
   args+=(--target-host "${TARGET_HOST}")
 fi
 
+if [[ -n "${CONFIG_SUBDIR}" ]]; then
+  args+=(--config-subdir "${CONFIG_SUBDIR}")
+fi
+
+if [[ -n "${EVENT_PATTERN}" ]]; then
+  args+=(--event-pattern "${EVENT_PATTERN}")
+fi
+
 if [[ -f "${APPROVALS_FILE}" ]]; then
   args+=(--approvals-yaml "${APPROVALS_FILE}")
 else
@@ -38,6 +46,8 @@ cat <<EOF
 [purohit init] webdir=${WEBDIR}
 [purohit init] token_file=${TOKEN_FILE}
 [purohit init] apx=${APX}
+[purohit init] config_subdir=${CONFIG_SUBDIR:-<none: legacy *apx*.ini search>}
+[purohit init] event_pattern=${EVENT_PATTERN:-<none>}
 [purohit init] mode=${INIT_MODE}
 EOF
 

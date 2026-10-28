@@ -47,6 +47,7 @@ Modify the script in ```$REPO/scripts/init_env.sh```
    b. Provide a ```PROJECT_NAME``` (e.g. ```run1```)
    c. Change the ```PORT``` to an unused value
    d. Optionally, specify a subset of ```EVENTS```. By default all events in the ```SOURCE_DIR``` will be copied
+   e. Source layout: by default configs are read from ```SOURCE_DIR/<event>/ProdF1/<one>.ini```, for event folders named ```GW<digits/underscores>``` or ```S<6 digits>[letter]```. Adjust ```CONFIG_SUBDIR``` / ```EVENT_PATTERN```, or set them to empty strings for the legacy ```*APX*.ini``` search (see docs/remote-event-import.md)
 
    Finally, source the script to set environment variables:
 ```source scripts/init_env.sh```

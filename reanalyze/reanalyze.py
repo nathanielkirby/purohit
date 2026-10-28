@@ -18,6 +18,7 @@ import pandas as pd
 import yaml
 from tqdm import tqdm
 
+from reanalyze.source_layout import compile_event_pattern, discover_subdir_configs, event_name_matches
 from reanalyze.utils import get_condor_job_status
 
 
@@ -42,6 +43,8 @@ class PERerun:
         working_dir=None,
         verbose=True,
         progress=True,
+        config_subdir=None,
+        event_pattern=None,
     ):
         """Create a rerun manager.
 
@@ -54,6 +57,11 @@ class PERerun:
         disabling OSG/container transfer settings inherited from production
         configs. Set ``preserve_osg_settings=True`` to keep those source
         settings unchanged.
+
+        ``config_subdir`` (e.g. ``"ProdF1"``) switches discovery to the fixed
+        layout ``source_dir/<event>/<config_subdir>/<one>.ini``, where the INI
+        name is arbitrary and ``apx`` is not used for selection. ``event_pattern``
+        is a regex that event directory names must fully match.
         """
 
         if source_dir is None:
@@ -80,6 +88,9 @@ class PERerun:
         self.config_cache_file = Path(config_cache_file) if config_cache_file else self.project_dir / "source_config_manifest.yaml"
         self.verbose = verbose
         self.progress = progress
+        self.config_subdir = config_subdir or None
+        self.event_pattern = event_pattern or None
+        self.skipped_events = {}
 
         self.project_dir.mkdir(parents=True, exist_ok=True)
         os.chdir(self.project_dir)
@@ -120,7 +131,10 @@ class PERerun:
             raise
 
     def _config_cache_metadata(self):
-        return {"source_dir": str(self.source_dir.expanduser().resolve()), "apx": self.apx}
+        metadata = {"source_dir": str(self.source_dir.expanduser().resolve()), "apx": self.apx}
+        if self.config_subdir or self.event_pattern:
+            metadata.update({"config_subdir": self.config_subdir, "event_pattern": self.event_pattern})
+        return metadata
 
     def _read_config_cache(self):
         if not self.cache_config_discovery or self.refresh_config_cache or not self.config_cache_file.is_file():
@@ -164,7 +178,22 @@ class PERerun:
             yaml.safe_dump(cache, handle, sort_keys=False)
         self._log(f"Wrote source config cache with {len(files)} file(s): {self.config_cache_file}")
 
+    def _scan_subdir_ini_files(self):
+        selected, self.skipped_events = discover_subdir_configs(
+            self.source_dir, self.config_subdir, event_pattern=self.event_pattern
+        )
+        for event, reason in sorted(self.skipped_events.items()):
+            self._log(f"Event {event}: skipped: {reason}", level="WARNING")
+        files = sorted(Path(path) for path in selected.values())
+        self._log(
+            f"Config scan complete: found {len(files)} config(s) in <event>/{self.config_subdir}/, "
+            f"skipped {len(self.skipped_events)} event(s)"
+        )
+        return files
+
     def _scan_matching_ini_files(self):
+        if self.config_subdir:
+            return self._scan_subdir_ini_files()
         apx_lower = self.apx.lower()
         files = []
         event_names = set()
@@ -205,7 +234,10 @@ class PERerun:
         return files
 
     def find_bilby_configs(self):
-        self._log(f"Searching for bilby_pipe INI files matching '*{self.apx}*.ini' under {self.source_dir}")
+        search = f"<event>/{self.config_subdir}/*.ini" if self.config_subdir else f"'*{self.apx}*.ini'"
+        if self.event_pattern:
+            search += f" with event names matching {self.event_pattern!r}"
+        self._log(f"Searching for bilby_pipe INI files matching {search} under {self.source_dir}")
         if not self.source_dir.is_dir():
             raise FileNotFoundError(f"source_dir does not exist or is not a directory: {self.source_dir}")
 
@@ -214,12 +246,13 @@ class PERerun:
             files = self._scan_matching_ini_files()
             self._write_config_cache(files)
         if not files:
-            raise FileNotFoundError(f"No bilby_pipe ini files matching '*{self.apx}*.ini' found under {self.source_dir}")
+            raise FileNotFoundError(f"No bilby_pipe ini files matching {search} found under {self.source_dir}")
 
+        pattern = compile_event_pattern(self.event_pattern)
         event_sdict = {}
         for item in files:
             rel_path = item.relative_to(self.source_dir)
-            if rel_path.parts:
+            if rel_path.parts and event_name_matches(rel_path.parts[0], pattern):
                 event_sdict.setdefault(rel_path.parts[0], []).append(str(item))
         self._log(f"Found {len(files)} matching INI file(s)")
         self._log(f"Grouped configs into {len(event_sdict)} event(s)")
@@ -227,7 +260,7 @@ class PERerun:
         event_dict = {}
         for event in self._progress(sorted(event_sdict), desc="Selecting configs", total=len(event_sdict)):
             event_files = sorted(event_sdict[event])
-            if event in self.approvals:
+            if event in self.approvals and not self.config_subdir:
                 token = self.approvals[event]
                 matches = [item for item in event_files if token in item]
                 if matches:

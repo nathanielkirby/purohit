@@ -119,6 +119,8 @@ def init_project(
     rsync_args: list[str] | None = None,
     create_token: bool = True,
     token_file: Path | None = None,
+    config_subdir: str | None = None,
+    event_pattern: str | None = None,
 ) -> dict[str, Any]:
     if source_dir is None:
         if working_dir is None:
@@ -155,6 +157,8 @@ def init_project(
         f"preserve_osg_settings={preserve_osg_settings}",
         verbose=verbose,
     )
+    if config_subdir or event_pattern:
+        _log(f"config_subdir={config_subdir} event_pattern={event_pattern}", verbose=verbose)
 
     summary: dict[str, Any] = {
         "generated_at": time.time(),
@@ -168,6 +172,8 @@ def init_project(
         "approval_events": sorted(approvals),
         "events_requested": events or [],
         "preserve_osg_settings": preserve_osg_settings,
+        "config_subdir": config_subdir,
+        "event_pattern": event_pattern,
         "pererun_arguments": {
             "overwrite_configs": overwrite_configs,
             "reconfigure_existing_configs": reconfigure_existing_configs,
@@ -201,6 +207,8 @@ def init_project(
             config_cache_file=config_cache_file,
             verbose=verbose,
             progress=progress,
+            config_subdir=config_subdir,
+            event_pattern=event_pattern,
         )
         _log("discovering/preparing source configs", verbose=verbose)
         rerun.prepare_configs()
@@ -237,6 +245,8 @@ def init_project(
             accounting_user=accounting_user,
             label_suffix=label_suffix,
             preserve_osg_settings=preserve_osg_settings,
+            config_subdir=config_subdir,
+            event_pattern=event_pattern,
             verbose=verbose and progress,
         )
         summary["events"] = remote_summary.get("events", [])
@@ -264,6 +274,8 @@ def init_project(
             "approval_events": sorted(approvals),
             "mode": summary["mode"],
             "preserve_osg_settings": preserve_osg_settings,
+            "config_subdir": config_subdir,
+            "event_pattern": event_pattern,
         },
     )
     summary["project_init_summary"] = str(init_summary_path)
@@ -303,6 +315,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rsync-arg", action="append", default=[])
     parser.add_argument("--no-create-token", action="store_true")
     parser.add_argument("--token-file", type=Path, default=None)
+    parser.add_argument("--config-subdir", default=None, help="Use the fixed layout SOURCE_DIR/<event>/<SUBDIR>/<one>.ini (e.g. ProdF1) instead of matching --apx in INI filenames.")
+    parser.add_argument("--event-pattern", default=None, help="Regex that event directory names must fully match, e.g. 'GW[0-9_]+|S[0-9]{6}[A-Za-z]?'.")
     return parser.parse_args()
 
 
@@ -338,6 +352,8 @@ def main() -> None:
         preserve_roots=args.preserve_root or None,
         rsync_args=args.rsync_arg or None,
         create_token=not args.no_create_token,
+        config_subdir=args.config_subdir or None,
+        event_pattern=args.event_pattern or None,
         token_file=args.token_file,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

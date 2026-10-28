@@ -106,31 +106,55 @@ source_dir = Path(sys.argv[1]).expanduser()
 apx = sys.argv[2].lower()
 events = set(item for item in sys.argv[3].split(',') if item) if len(sys.argv) > 3 else set()
 approvals = json.loads(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else {}
+config_subdir = sys.argv[5] if len(sys.argv) > 5 else ''
+event_pattern = re.compile(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else None
 files = []
-for path in source_dir.rglob('*.ini'):
-    if apx and apx not in path.name.lower():
-        continue
-    try:
-        rel = path.relative_to(source_dir)
-    except ValueError:
-        continue
-    event = rel.parts[0] if rel.parts else path.parent.name
-    if events and event not in events:
-        continue
-    files.append((event, str(path)))
+skipped = {}
+if config_subdir:
+    # Fixed layout: source_dir/<event>/<config_subdir>/<one>.ini (mirrors
+    # reanalyze.source_layout.discover_subdir_configs; keep in sync).
+    for event_dir in sorted(p for p in source_dir.iterdir() if p.is_dir()):
+        event = event_dir.name
+        if event_pattern is not None and not event_pattern.fullmatch(event):
+            continue
+        if events and event not in events:
+            continue
+        subdir = event_dir / config_subdir
+        if not subdir.is_dir():
+            skipped[event] = f'missing {config_subdir}/ directory'
+            continue
+        inis = sorted(p for p in subdir.glob('*.ini') if p.is_file())
+        if len(inis) != 1:
+            skipped[event] = f'expected exactly one .ini in {config_subdir}/, found {len(inis)}: {[p.name for p in inis]}'
+            continue
+        files.append((event, str(inis[0])))
+else:
+    for path in source_dir.rglob('*.ini'):
+        if apx and apx not in path.name.lower():
+            continue
+        try:
+            rel = path.relative_to(source_dir)
+        except ValueError:
+            continue
+        event = rel.parts[0] if rel.parts else path.parent.name
+        if event_pattern is not None and not event_pattern.fullmatch(event):
+            continue
+        if events and event not in events:
+            continue
+        files.append((event, str(path)))
 
 grouped = {}
 for event, path in sorted(files):
     grouped.setdefault(event, []).append(path)
 selected = {}
 for event, event_files in sorted(grouped.items()):
-    if event in approvals:
+    if event in approvals and not config_subdir:
         token = str(approvals[event])
         matches = [path for path in event_files if token in path]
         selected[event] = matches[0] if matches else event_files[-1]
     else:
         selected[event] = event_files[0]
-print(json.dumps({'source_dir': str(source_dir), 'events': {event: {'source_ini': path} for event, path in selected.items()}}, sort_keys=True))
+print(json.dumps({'source_dir': str(source_dir), 'events': {event: {'source_ini': path} for event, path in selected.items()}, 'skipped': skipped}, sort_keys=True))
 '''
 
 
@@ -141,20 +165,33 @@ def discover_remote_configs(
     events: list[str] | None = None,
     approvals: dict[str, str] | None = None,
     *,
+    config_subdir: str | None = None,
+    event_pattern: str | None = None,
     verbose: bool = True,
 ) -> dict[str, Any]:
     event_note = f"{len(events)} requested event(s)" if events else "all matching events"
     approval_note = f"{len(approvals or {})} approval token(s)"
+    layout_note = (
+        f"layout=<event>/{config_subdir}/*.ini" if config_subdir else f"apx={apx!r}"
+    ) + (f", event_pattern={event_pattern!r}" if event_pattern else "")
     _log(
         f"discovering configs on {source_host.name} via {source_host.require_ssh()} "
-        f"under {source_dir!r} for apx={apx!r} ({event_note}, {approval_note})",
+        f"under {source_dir!r} for {layout_note} ({event_note}, {approval_note})",
         verbose=verbose,
     )
+    if config_subdir and approvals:
+        _log("approval tokens are ignored with config_subdir (one INI per event)", verbose=verbose)
     start = time.time()
-    stdout = run_remote_python(source_host, REMOTE_DISCOVERY_CODE, [source_dir, apx, ",".join(events or []), json.dumps(approvals or {})])
+    stdout = run_remote_python(
+        source_host,
+        REMOTE_DISCOVERY_CODE,
+        [source_dir, apx, ",".join(events or []), json.dumps(approvals or {}), config_subdir or "", event_pattern or ""],
+    )
     discovery = json.loads(stdout)
     n_events = len(discovery.get("events", {}))
     _log(f"discovery complete: selected {n_events} event(s) in {time.time() - start:.1f} s", verbose=verbose)
+    for event, reason in sorted(discovery.get("skipped", {}).items()):
+        _log(f"WARNING: skipped event {event}: {reason}", verbose=verbose)
     return discovery
 
 
@@ -474,6 +511,8 @@ def import_events(
     accounting_user: str = "auto",
     label_suffix: str = "_p2",
     preserve_osg_settings: bool = False,
+    config_subdir: str | None = None,
+    event_pattern: str | None = None,
     verbose: bool = True,
 ) -> dict[str, Any]:
     profiles = HostProfiles.load(hosts_file)
@@ -485,7 +524,16 @@ def import_events(
         f"target_project={target_project}",
         verbose=verbose,
     )
-    discovery = discover_remote_configs(source_host, source_dir, apx, events=events, approvals=approvals, verbose=verbose)
+    discovery = discover_remote_configs(
+        source_host,
+        source_dir,
+        apx,
+        events=events,
+        approvals=approvals,
+        config_subdir=config_subdir,
+        event_pattern=event_pattern,
+        verbose=verbose,
+    )
     selected_events = sorted(discovery.get("events", {}).items())
     _log(f"materializing {len(selected_events)} selected event(s)", verbose=verbose)
     results = []
@@ -526,7 +574,10 @@ def import_events(
         "accounting": accounting,
         "accounting_user": getpass.getuser() if accounting_user == "auto" else accounting_user,
         "label_suffix": label_suffix,
+        "config_subdir": config_subdir,
+        "event_pattern": event_pattern,
         "events": results,
+        "skipped_events": discovery.get("skipped", {}),
     }
     imports_dir = target_project / "control" / "imports"
     imports_dir.mkdir(parents=True, exist_ok=True)
