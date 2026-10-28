@@ -37,12 +37,12 @@ def _make_o3_tree(root: Path) -> dict[str, Path]:
     _touch(root / "old_GW150914" / "ProdF1" / "config.ini")
     _touch(root / "GW190521_ab" / "ProdF1" / "config.ini")
     _touch(root / "S19042" / "ProdF1" / "config.ini")
-    _touch(root / "S190425zz" / "ProdF1" / "config.ini")
+    _touch(root / "S190425zzz" / "ProdF1" / "config.ini")
     # Matching events with a broken layout are reported as skipped.
     _touch(root / "S190426c" / "ProdF1" / "a.ini")
     _touch(root / "S190426c" / "ProdF1" / "b.ini")
     (root / "GW190412" / "ProdF2").mkdir(parents=True)
-    (root / "S190513bm").mkdir()  # two letters: not an event per the O3 pattern
+    (root / "S190513bm").mkdir()  # valid two-letter name, but no ProdF1/
     return expected
 
 
@@ -58,7 +58,8 @@ def _make_o3_tree(root: Path) -> dict[str, Path]:
         ("gw150914", False),
         ("S19042", False),
         ("S1904251", False),
-        ("S190425zz", False),
+        ("S190513bm", True),
+        ("S190425zzz", False),
         ("old_GW150914", False),
         ("scripts", False),
     ],
@@ -73,7 +74,7 @@ def test_discover_subdir_configs_selects_single_prod_ini(tmp_path):
     selected, skipped = discover_subdir_configs(tmp_path, O3_CONFIG_SUBDIR, O3_EVENT_PATTERN)
 
     assert selected == {event: str(path) for event, path in expected.items()}
-    assert set(skipped) == {"S190426c", "GW190412"}
+    assert set(skipped) == {"S190426c", "GW190412", "S190513bm"}
     assert "found 2" in skipped["S190426c"]
     assert "missing ProdF1/" in skipped["GW190412"]
 
@@ -142,7 +143,7 @@ def test_pererun_find_bilby_configs_with_config_subdir(tmp_path):
     )
 
     assert rerun.find_bilby_configs() == {event: str(path) for event, path in expected.items()}
-    assert set(rerun.skipped_events) == {"S190426c", "GW190412"}
+    assert set(rerun.skipped_events) == {"S190426c", "GW190412", "S190513bm"}
 
 
 def test_pererun_cache_is_invalidated_by_layout_change(tmp_path):

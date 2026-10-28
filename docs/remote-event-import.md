@@ -69,7 +69,7 @@ source_dir/
 Two options select this layout. Both work for the local (`PERerun`) and remote-import paths:
 
 - `--config-subdir ProdF1`: use `source_dir/<event>/ProdF1/*.ini` (non-recursive) instead of the `--apx` filename match. Each event must contain exactly one INI there; events with none, several, or a missing `ProdF1/` are skipped and listed in the logs and in the summary under `skipped_events`. Approval tokens are ignored in this mode. `--apx` is still used when rewriting the target INI (e.g. the `NRSur7dq4` transfer path).
-- `--event-pattern REGEX`: only top-level directories whose names **fully** match `REGEX` are treated as events. The O3 pattern is `GW[0-9_]+|S[0-9]{6}[A-Za-z]?` (GW + digits/underscores, or S + 6 digits + an optional letter). This also works without `--config-subdir`.
+- `--event-pattern REGEX`: only top-level directories whose names **fully** match `REGEX` are treated as events. The O3 pattern is `GW[0-9_]+|S[0-9]{6}[A-Za-z]{0,2}` (GW + digits/underscores, or S + 6 digits + up to two letters). This also works without `--config-subdir`.
 
 `scripts/init_env.sh` on the `O3` branch defaults to `CONFIG_SUBDIR=ProdF1` and the O3 `EVENT_PATTERN`. Set `CONFIG_SUBDIR=""` and/or `EVENT_PATTERN=""` before sourcing it to restore the legacy search.
 
@@ -79,7 +79,7 @@ python scripts/import_remote_events.py \
   --source-dir /home/source_user/O3/working \
   --apx IMRPhenomXPHM \
   --config-subdir ProdF1 \
-  --event-pattern 'GW[0-9_]+|S[0-9]{6}[A-Za-z]?'
+  --event-pattern 'GW[0-9_]+|S[0-9]{6}[A-Za-z]{0,2}'
 ```
 
 ## Target layout

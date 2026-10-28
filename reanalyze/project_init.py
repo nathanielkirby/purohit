@@ -316,7 +316,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-create-token", action="store_true")
     parser.add_argument("--token-file", type=Path, default=None)
     parser.add_argument("--config-subdir", default=None, help="Use the fixed layout SOURCE_DIR/<event>/<SUBDIR>/<one>.ini (e.g. ProdF1) instead of matching --apx in INI filenames.")
-    parser.add_argument("--event-pattern", default=None, help="Regex that event directory names must fully match, e.g. 'GW[0-9_]+|S[0-9]{6}[A-Za-z]?'.")
+    parser.add_argument("--event-pattern", default=None, help="Regex that event directory names must fully match, e.g. 'GW[0-9_]+|S[0-9]{6}[A-Za-z]{0,2}'.")
     return parser.parse_args()
 
 

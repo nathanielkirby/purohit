@@ -37,11 +37,11 @@ export APX="${APX:-IMRPhenomXPHM}"
 
 # O3 source layout: $SOURCE_DIR/<event>/ProdF1/<one>.ini (any filename).
 # Only event dirs fully matching EVENT_PATTERN are used: GW + digits/underscores,
-# or S + 6 digits + optional letter. Set CONFIG_SUBDIR="" to fall back to the
+# or S + 6 digits + up to two letters. Set CONFIG_SUBDIR="" to fall back to the
 # legacy search (any *$APX*.ini under each event); EVENT_PATTERN="" disables
 # the event-name filter.
 export CONFIG_SUBDIR="${CONFIG_SUBDIR-ProdF1}"
-_O3_EVENT_PATTERN='GW[0-9_]+|S[0-9]{6}[A-Za-z]?'
+_O3_EVENT_PATTERN='GW[0-9_]+|S[0-9]{6}[A-Za-z]{0,2}'
 export EVENT_PATTERN="${EVENT_PATTERN-${_O3_EVENT_PATTERN}}"
 
 export HOST="${HOST:-127.0.0.1}"

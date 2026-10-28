@@ -19,8 +19,8 @@ import re
 
 
 # GW followed by digits/underscores (e.g. GW190521_030229), or S + 6 digits +
-# optional letter (e.g. S190425z, S200105).
-O3_EVENT_PATTERN = r"GW[0-9_]+|S[0-9]{6}[A-Za-z]?"
+# up to two letters (e.g. S190425z, S190513bm, S200105).
+O3_EVENT_PATTERN = r"GW[0-9_]+|S[0-9]{6}[A-Za-z]{0,2}"
 O3_CONFIG_SUBDIR = "ProdF1"
 
 
